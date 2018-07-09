@@ -10,8 +10,7 @@ resources:
   containers:
   - container: dev
     image: ubuntu:16.04
-pool:
-  name: MyPool
+pool: MyPool
 container: dev
 steps:
 - script: printenv

@@ -15,7 +15,7 @@ pool:
   name: Hosted
   image: VS2017
 steps:
-- script: devenv.exe /?
+- script: echo hello world
 ```
 
 ## Private pools
