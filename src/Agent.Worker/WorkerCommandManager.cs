@@ -9,6 +9,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
     public interface IWorkerCommandManager : IAgentService
     {
         bool TryProcessCommand(IExecutionContext context, string input);
+        void SetCommandState(IExecutionContext context, string commandArea, bool enable);
     }
 
     public sealed class WorkerCommandManager : AgentService, IWorkerCommandManager
@@ -26,6 +27,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 Trace.Info($"Register command extension for area {commandExt.CommandArea}");
                 _commandExtensions[commandExt.CommandArea] = commandExt;
+            }
+        }
+
+        public void SetCommandState(IExecutionContext context, string commandArea, bool enable)
+        {
+            if (_commandExtensions.TryGetValue(commandArea, out IWorkerCommandExtension extension))
+            {
+                extension.Enabled = enable;
+            }
+            else
+            {
+                context.Warning(StringUtil.Loc("CommandNotFound", commandArea));
             }
         }
 
@@ -51,6 +64,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             if (_commandExtensions.TryGetValue(command.Area, out IWorkerCommandExtension extension))
             {
+                if (!extension.Enabled)
+                {
+                    context.Error($"Command '{extension.CommandArea}' is not enabled for the current context.");
+                    context.CommandResult = TaskResult.Failed;
+                    return false;
+                }
+
                 if (!extension.SupportedHostTypes.HasFlag(context.Variables.System_HostType))
                 {
                     context.Error(StringUtil.Loc("CommandNotSupported", command.Area, context.Variables.System_HostType));
@@ -93,6 +113,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
     public interface IWorkerCommandExtension : IExtension
     {
+        bool Enabled { get; set; }
+
         string CommandArea { get; }
 
         HostTypes SupportedHostTypes { get; }

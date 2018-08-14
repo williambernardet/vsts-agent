@@ -2,6 +2,7 @@
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Newtonsoft.Json;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
@@ -184,6 +185,201 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             CollectionUrl = executionContext.Variables.System_TFCollectionUrl;
             DefinitionName = executionContext.Variables.Build_DefinitionName;
             LastRunOn = DateTimeOffset.Now;
+        }
+    }
+
+    public class PipelineTrackingConfig
+    {
+        private Dictionary<string, RepositoryTrackingConfig> _repositories;
+
+        public PipelineTrackingConfig()
+        { }
+
+        public PipelineTrackingConfig(
+            IExecutionContext executionContext,
+            string workspaceDirectory)
+        {
+            // Set basic properties
+            CollectionId = executionContext.Variables.System_CollectionId;
+            CollectionUrl = executionContext.Variables.System_TFCollectionUrl;
+            DefinitionId = executionContext.Variables.System_DefinitionId;
+            switch (executionContext.Variables.System_HostType)
+            {
+                case HostTypes.Build:
+                    DefinitionName = executionContext.Variables.Build_DefinitionName;
+                    break;
+                case HostTypes.Release | HostTypes.Deployment:
+                    DefinitionName = executionContext.Variables.Get(Constants.Variables.Release.ReleaseDefinitionName);
+                    break;
+                default:
+                    break;
+            }
+            LastRunOn = DateTimeOffset.Now;
+
+            // Set the directories.
+            WorkspaceDirectory = workspaceDirectory;
+            RepositoriesDirectory = Path.Combine(workspaceDirectory, Constants.Agent.Path.SourcesDirectory);    // 1/s dir
+            TestResultsDirectory = Path.Combine(workspaceDirectory, Constants.Agent.Path.TestResultsDirectory); // 1/TestResult dir
+            ArtifactsDirectory = Path.Combine(workspaceDirectory, Constants.Agent.Path.ArtifactsDirectory);     // 1/a dir
+            BinariesDirectory = Path.Combine(workspaceDirectory, Constants.Agent.Path.BinariesDirectory);       // 1/b dir
+
+            // tracking repository resources
+            if (executionContext.Repositories.Count > 0)
+            {
+                // if there is one repository, we will keep using the layout format we have today, _work/1/s 
+                // if there are multiple repositories, we will put each repository under the sub-dir of its alias, _work/1/s/self
+                if (executionContext.Repositories.Count == 1)
+                {
+                    var repo = executionContext.Repositories[0];
+                    Repositories[repo.Alias] = new RepositoryTrackingConfig()
+                    {
+                        RepositoryType = repo.Type,
+                        RepositoryUrl = repo.Url.AbsoluteUri,
+                        RepositoryDirectory = RepositoriesDirectory,
+                        LastRunOn = DateTime.UtcNow
+                    };
+                }
+                else
+                {
+                    // multiple repositories
+                    foreach (var repo in executionContext.Repositories)
+                    {
+                        Repositories[repo.Alias] = new RepositoryTrackingConfig()
+                        {
+                            RepositoryType = repo.Type,
+                            RepositoryUrl = repo.Url.AbsoluteUri,
+                            RepositoryDirectory = Path.Combine(RepositoriesDirectory, repo.Alias),
+                            LastRunOn = DateTime.UtcNow
+                        };
+                    }
+                }
+            }
+        }
+
+        public string CollectionId { get; set; }
+        public string CollectionUrl { get; set; }
+        public string DefinitionId { get; set; }
+        public string DefinitionName { get; set; }
+
+        [JsonIgnore]
+        public DateTimeOffset? LastRunOn { get; set; }
+
+        [JsonProperty("lastRunOn")]
+        [EditorBrowsableAttribute(EditorBrowsableState.Never)]
+        public string LastRunOnString
+        {
+            get
+            {
+                return string.Format(CultureInfo.InvariantCulture, "{0}", LastRunOn);
+            }
+
+            set
+            {
+                if (string.IsNullOrEmpty(value))
+                {
+                    LastRunOn = null;
+                    return;
+                }
+
+                LastRunOn = DateTimeOffset.Parse(value, CultureInfo.InvariantCulture);
+            }
+        }
+
+        public string WorkspaceDirectory { get; set; }
+        public string TestResultsDirectory { get; set; }
+        public string RepositoriesDirectory { get; set; }
+        public string ArtifactsDirectory { get; set; }
+        public string BinariesDirectory { get; set; }
+
+        public Dictionary<string, RepositoryTrackingConfig> Repositories
+        {
+            get
+            {
+                if (_repositories == null)
+                {
+                    _repositories = new Dictionary<string, RepositoryTrackingConfig>(StringComparer.OrdinalIgnoreCase);
+                }
+                return _repositories;
+            }
+        }
+    }
+
+    public sealed class RepositoryTrackingConfig
+    {
+        public string RepositoryUrl { get; set; }
+        public string RepositoryType { get; set; }
+        public string RepositoryDirectory { get; set; }
+
+        [JsonIgnore]
+        public DateTimeOffset? LastRunOn { get; set; }
+
+        [JsonProperty("lastRunOn")]
+        [EditorBrowsableAttribute(EditorBrowsableState.Never)]
+        public string LastRunOnString
+        {
+            get
+            {
+                return string.Format(CultureInfo.InvariantCulture, "{0}", LastRunOn);
+            }
+
+            set
+            {
+                if (string.IsNullOrEmpty(value))
+                {
+                    LastRunOn = null;
+                    return;
+                }
+
+                LastRunOn = DateTimeOffset.Parse(value, CultureInfo.InvariantCulture);
+            }
+        }
+
+        [JsonIgnore]
+        public DateTimeOffset? LastMaintenanceAttemptedOn { get; set; }
+
+        [JsonProperty("lastMaintenanceAttemptedOn")]
+        [EditorBrowsableAttribute(EditorBrowsableState.Never)]
+        public string LastMaintenanceAttemptedOnString
+        {
+            get
+            {
+                return string.Format(CultureInfo.InvariantCulture, "{0}", LastMaintenanceAttemptedOn);
+            }
+
+            set
+            {
+                if (string.IsNullOrEmpty(value))
+                {
+                    LastMaintenanceAttemptedOn = null;
+                    return;
+                }
+
+                LastMaintenanceAttemptedOn = DateTimeOffset.Parse(value, CultureInfo.InvariantCulture);
+            }
+        }
+
+        [JsonIgnore]
+        public DateTimeOffset? LastMaintenanceCompletedOn { get; set; }
+
+        [JsonProperty("lastMaintenanceCompletedOn")]
+        [EditorBrowsableAttribute(EditorBrowsableState.Never)]
+        public string LastMaintenanceCompletedOnString
+        {
+            get
+            {
+                return string.Format(CultureInfo.InvariantCulture, "{0}", LastMaintenanceCompletedOn);
+            }
+
+            set
+            {
+                if (string.IsNullOrEmpty(value))
+                {
+                    LastMaintenanceCompletedOn = null;
+                    return;
+                }
+
+                LastMaintenanceCompletedOn = DateTimeOffset.Parse(value, CultureInfo.InvariantCulture);
+            }
         }
     }
 }

@@ -50,6 +50,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.CodeCoverage
             }
         }
 
+        public bool Enabled
+        {
+            get
+            {
+                return true;
+            }
+            set
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
         #region publish code coverage helper methods
         private void ProcessPublishCodeCoverageCommand(IExecutionContext context, Dictionary<string, string> eventProperties)
         {

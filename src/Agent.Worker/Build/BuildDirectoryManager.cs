@@ -61,15 +61,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
     [ServiceLocator(Default = typeof(BuildDirectoryManager))]
     public interface IBuildDirectoryManager : IAgentService
     {
-        TrackingConfig PrepareDirectory(
+        PipelineTrackingConfig PrepareDirectory(
             IExecutionContext executionContext,
-            RepositoryResource repository,
             WorkspaceOptions workspace);
-
-        void CreateDirectory(
-            IExecutionContext executionContext,
-            string description, string path,
-            bool deleteExisting);
     }
 
     public sealed class BuildDirectoryManager : AgentService, IBuildDirectoryManager, IMaintenanceServiceProvider
@@ -77,118 +71,97 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         public string MaintenanceDescription => StringUtil.Loc("DeleteUnusedBuildDir");
         public Type ExtensionType => typeof(IMaintenanceServiceProvider);
 
-        public TrackingConfig PrepareDirectory(
+        public PipelineTrackingConfig PrepareDirectory(
             IExecutionContext executionContext,
-            RepositoryResource repository,
             WorkspaceOptions workspace)
         {
             // Validate parameters.
             Trace.Entering();
             ArgUtil.NotNull(executionContext, nameof(executionContext));
-            ArgUtil.NotNull(executionContext.Variables, nameof(executionContext.Variables));
-            ArgUtil.NotNull(repository, nameof(repository));
             var trackingManager = HostContext.GetService<ITrackingManager>();
-
-            // Defer to the source provider to calculate the hash key.
-            Trace.Verbose("Calculating build directory hash key.");
-            string hashKey = repository.GetSourceDirectoryHashKey(executionContext);
-            Trace.Verbose($"Hash key: {hashKey}");
 
             // Load the existing tracking file if one already exists.
             string trackingFile = Path.Combine(
                 HostContext.GetDirectory(WellKnownDirectory.Work),
-                Constants.Build.Path.SourceRootMappingDirectory,
+                "RootMapping",
                 executionContext.Variables.System_CollectionId,
                 executionContext.Variables.System_DefinitionId,
-                Constants.Build.Path.TrackingConfigFile);
-            Trace.Verbose($"Loading tracking config if exists: {trackingFile}");
-            TrackingConfigBase existingConfig = trackingManager.LoadIfExists(executionContext, trackingFile);
+                "pipeline.json");
 
-            // Check if the build needs to be garbage collected. If the hash key
-            // has changed, then the existing build directory cannot be reused.
-            TrackingConfigBase garbageConfig = null;
-            if (existingConfig != null
-                && !string.Equals(existingConfig.HashKey, hashKey, StringComparison.OrdinalIgnoreCase))
+            Trace.Verbose($"Loading tracking config if exists: {trackingFile}");
+            PipelineTrackingConfig trackingConfig = trackingManager.LoadIfExistsV2(executionContext, trackingFile);
+
+            if (trackingConfig == null)
             {
-                // Just store a reference to the config for now. It can safely be
-                // marked for garbage collection only after the new build directory
-                // config has been created.
-                Trace.Verbose($"Hash key from existing tracking config does not match. Existing key: {existingConfig.HashKey}");
-                garbageConfig = existingConfig;
-                existingConfig = null;
+                // try convert existing build tracking file
+                Trace.Verbose($"Try convert existing build tracking config.");
+                trackingConfig = ConvertToPipelineTrackingFile(executionContext);
             }
 
-            // Create a new tracking config if required.
-            TrackingConfig newConfig;
-            if (existingConfig == null)
+            if (trackingConfig == null)
             {
                 Trace.Verbose("Creating a new tracking config file.");
-                var agentSetting = HostContext.GetService<IConfigurationStore>().GetSettings();
-                newConfig = trackingManager.Create(
-                    executionContext,
-                    repository,
-                    hashKey,
-                    trackingFile,
-                    repository.TestOverrideBuildDirectory(agentSetting));
-                ArgUtil.NotNull(newConfig, nameof(newConfig));
+                trackingConfig = trackingManager.Create(executionContext, trackingFile);
             }
             else
             {
-                // Convert legacy format to the new format if required.
-                newConfig = ConvertToNewFormat(executionContext, repository, existingConfig);
-
-                // Fill out repository type if it's not there.
-                // repository type is a new property introduced for maintenance job
-                if (string.IsNullOrEmpty(newConfig.RepositoryType))
-                {
-                    newConfig.RepositoryType = repository.Type;
-                }
-
-                // For existing tracking config files, update the job run properties.
-                Trace.Verbose("Updating job run properties.");
-                trackingManager.UpdateJobRunProperties(executionContext, newConfig, trackingFile);
+                // Update tracking information for existing tracking config file:
+                // 1. update the job execution properties. (collection url/definition url etc.)
+                // 2. update the job resources. (repositories changes)
+                Trace.Verbose("Updating job execution properties and resources into tracking config file.");
+                trackingManager.UpdateJobRunProperties(executionContext, trackingConfig, trackingFile);
             }
 
-            // Mark the old configuration for garbage collection.
-            if (garbageConfig != null)
-            {
-                Trace.Verbose("Marking existing config for garbage collection.");
-                trackingManager.MarkForGarbageCollection(executionContext, garbageConfig);
-            }
+            // We should have a tracking config at this point.
+            ArgUtil.NotNull(trackingConfig, nameof(trackingConfig));
 
-            // Prepare the build directory.
+            // Prepare the job directory.
             // There are 2 ways to provide build directory clean policy.
             //     1> set definition variable build.clean or agent.clean.buildDirectory. (on-prem user need to use this, since there is no Web UI in TFS 2016)
-            //     2> select source clean option in definition repository tab. (VSTS will have this option in definition designer UI)
-            BuildCleanOption cleanOption = GetBuildDirectoryCleanOption(executionContext, workspace);
+            //     2> provide clean option in Pipelines.WorkspaceOptions (VSTS will have this option in definition designer UI and YAML)
+            string cleanOption = GetWorkspaceCleanOption(executionContext, workspace);
 
             CreateDirectory(
                 executionContext,
-                description: "build directory",
-                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), newConfig.BuildDirectory),
-                deleteExisting: cleanOption == BuildCleanOption.All);
+                description: "job directory",
+                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), trackingConfig.WorkspaceDirectory),
+                deleteExisting: cleanOption == PipelineConstants.WorkspaceCleanOptions.All);
             CreateDirectory(
                 executionContext,
                 description: "artifacts directory",
-                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), newConfig.ArtifactsDirectory),
+                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), trackingConfig.ArtifactsDirectory),
                 deleteExisting: true);
             CreateDirectory(
                 executionContext,
                 description: "test results directory",
-                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), newConfig.TestResultsDirectory),
+                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), trackingConfig.TestResultsDirectory),
                 deleteExisting: true);
             CreateDirectory(
                 executionContext,
                 description: "binaries directory",
-                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), newConfig.BuildDirectory, Constants.Build.Path.BinariesDirectory),
-                deleteExisting: cleanOption == BuildCleanOption.Binary);
+                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), trackingConfig.BinariesDirectory),
+                deleteExisting: cleanOption == PipelineConstants.WorkspaceCleanOptions.Outputs);
             CreateDirectory(
                 executionContext,
-                description: "source directory",
-                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), newConfig.BuildDirectory, Constants.Build.Path.SourcesDirectory),
-                deleteExisting: cleanOption == BuildCleanOption.Source);
+                description: "repositories directory",
+                path: Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), trackingConfig.RepositoriesDirectory),
+                deleteExisting: cleanOption == PipelineConstants.WorkspaceCleanOptions.Resources);
 
-            return newConfig;
+            // Create directory for each repository resource
+            // Set each repository's path (calculated by tracking file) back to repository's property
+            foreach (var repo in executionContext.Repositories)
+            {
+                string repositoryDirectory = Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), trackingConfig.Repositories[repo.Alias].RepositoryDirectory);
+                CreateDirectory(
+                    executionContext,
+                    description: $"repository directory {repo.Alias}",
+                    path: repositoryDirectory,
+                    deleteExisting: false);
+
+                repo.Properties.Set<string>(RepositoryPropertyNames.Path, repositoryDirectory);
+            }
+
+            return trackingConfig;
         }
 
         public async Task RunMaintenanceOperation(IExecutionContext executionContext)
@@ -328,6 +301,78 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             }
         }
 
+        public PipelineTrackingConfig ConvertToPipelineTrackingFile(IExecutionContext executionContext)
+        {
+            var trackingManager = HostContext.GetService<ITrackingManager>();
+
+            // Load the existing tracking file if one already exists.
+            string trackingFile = Path.Combine(
+                HostContext.GetDirectory(WellKnownDirectory.Work),
+                Constants.Build.Path.SourceRootMappingDirectory,
+                executionContext.Variables.System_CollectionId,
+                executionContext.Variables.System_DefinitionId,
+                Constants.Build.Path.TrackingConfigFile);
+            Trace.Verbose($"Loading tracking config if exists: {trackingFile}");
+            TrackingConfigBase existingConfig = trackingManager.LoadIfExists(executionContext, trackingFile);
+            if (existingConfig == null)
+            {
+                Trace.Verbose($"Tracking config doesn't exists: {trackingFile}");
+                return null;
+            }
+
+            TrackingConfig existingConfigV2 = null;
+            RepositoryResource existingRepository = null;
+            foreach (var repository in executionContext.Repositories)
+            {
+                if (string.Equals(existingConfig.HashKey, repository.GetSourceDirectoryHashKey(executionContext), StringComparison.OrdinalIgnoreCase))
+                {
+                    existingRepository = repository;
+                    break;
+                }
+            }
+
+            if (existingRepository == null)
+            {
+                Trace.Verbose($"Can't find repository with same hash key for existing tracking config. Existing key: {existingConfig.HashKey}");
+                Trace.Verbose("Marking existing config for garbage collection.");
+                trackingManager.MarkForGarbageCollection(executionContext, existingConfig);
+                return null;
+            }
+            else
+            {
+                // Convert legacy format to the new format if required.
+                existingConfigV2 = ConvertToNewFormat(executionContext, existingRepository, existingConfig);
+                PipelineTrackingConfig pipelineTrackingConfig = new PipelineTrackingConfig()
+                {
+                    CollectionId = existingConfigV2.CollectionId,
+                    CollectionUrl = existingConfigV2.CollectionId,
+                    DefinitionId = existingConfigV2.DefinitionId,
+                    DefinitionName = existingConfigV2.DefinitionName,
+                    LastRunOn = existingConfigV2.LastRunOn,
+                    WorkspaceDirectory = existingConfigV2.BuildDirectory,
+                    ArtifactsDirectory = existingConfigV2.ArtifactsDirectory,
+                    BinariesDirectory = Path.Combine(existingConfigV2.BuildDirectory, Constants.Build.Path.BinariesDirectory),
+                    TestResultsDirectory = existingConfigV2.TestResultsDirectory,
+                    RepositoriesDirectory = existingConfigV2.SourcesDirectory,
+                    Repositories = {
+                        {
+                            existingRepository.Alias,
+                            new RepositoryTrackingConfig()
+                            {
+                                RepositoryType = existingConfigV2.RepositoryType,
+                                RepositoryUrl = existingConfigV2.RepositoryUrl,
+                                RepositoryDirectory=existingConfigV2.SourcesDirectory,
+                                LastRunOn = existingConfigV2.LastRunOn,
+                                LastMaintenanceAttemptedOn = existingConfigV2.LastMaintenanceAttemptedOn,
+                                LastMaintenanceCompletedOn = existingConfigV2.LastMaintenanceCompletedOn
+                            }
+                        }
+                    }
+                };
+                return pipelineTrackingConfig;
+            }
+        }
+
         private TrackingConfig ConvertToNewFormat(
             IExecutionContext executionContext,
             RepositoryResource repository,
@@ -381,7 +426,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             return newConfig;
         }
 
-        public void CreateDirectory(IExecutionContext executionContext, string description, string path, bool deleteExisting)
+        private void CreateDirectory(IExecutionContext executionContext, string description, string path, bool deleteExisting)
         {
             // Delete.
             if (deleteExisting)
@@ -409,47 +454,30 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             }
         }
 
-        // Prefer variable over endpoint data when get build directory clean option.
-        // Prefer agent.clean.builddirectory over build.clean when use variable
-        // available value for build.clean or agent.clean.builddirectory:
-        //      Delete entire build directory if build.clean=all is set.
-        //      Recreate binaries dir if clean=binary is set.
-        //      Recreate source dir if clean=src is set.
-        private BuildCleanOption GetBuildDirectoryCleanOption(IExecutionContext executionContext, WorkspaceOptions workspace)
+        private String GetWorkspaceCleanOption(IExecutionContext executionContext, WorkspaceOptions workspace)
         {
-            BuildCleanOption? cleanOption = executionContext.Variables.Build_Clean;
-            if (cleanOption != null)
+            BuildCleanOption cleanOption = executionContext.Variables.Build_Clean ?? BuildCleanOption.None;
+            switch (cleanOption)
             {
-                return cleanOption.Value;
+                case BuildCleanOption.Source:
+                    return PipelineConstants.WorkspaceCleanOptions.Resources;
+                case BuildCleanOption.Binary:
+                    return PipelineConstants.WorkspaceCleanOptions.Outputs;
+                case BuildCleanOption.All:
+                    return PipelineConstants.WorkspaceCleanOptions.All;
             }
 
-            if (workspace == null)
+            if (!string.IsNullOrEmpty(workspace.Clean))
             {
-                return BuildCleanOption.None;
+                Dictionary<string, string> workspaceClean = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                workspaceClean[nameof(workspace.Clean)] = workspace.Clean;
+                executionContext.Variables.ExpandValues(target: workspaceClean);
+                VarUtil.ExpandEnvironmentVariables(HostContext, target: workspaceClean);
+                return workspaceClean[nameof(workspace.Clean)];
             }
             else
             {
-                Dictionary<string, string> workspaceClean = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                workspaceClean["clean"] = workspace.Clean;
-                executionContext.Variables.ExpandValues(target: workspaceClean);
-                VarUtil.ExpandEnvironmentVariables(HostContext, target: workspaceClean);
-                string expandedClean = workspaceClean["clean"];
-                if (string.Equals(expandedClean, PipelineConstants.WorkspaceCleanOptions.All, StringComparison.OrdinalIgnoreCase))
-                {
-                    return BuildCleanOption.All;
-                }
-                else if (string.Equals(expandedClean, PipelineConstants.WorkspaceCleanOptions.Resources, StringComparison.OrdinalIgnoreCase))
-                {
-                    return BuildCleanOption.Source;
-                }
-                else if (string.Equals(expandedClean, PipelineConstants.WorkspaceCleanOptions.Outputs, StringComparison.OrdinalIgnoreCase))
-                {
-                    return BuildCleanOption.Binary;
-                }
-                else
-                {
-                    return BuildCleanOption.None;
-                }
+                return string.Empty;
             }
         }
     }

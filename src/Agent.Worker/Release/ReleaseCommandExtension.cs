@@ -18,6 +18,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
 
         public string CommandArea => "release";
 
+        public bool Enabled
+        {
+            get
+            {
+                return true;
+            }
+            set
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
         public HostTypes SupportedHostTypes => HostTypes.Release | HostTypes.Deployment;
 
         public void ProcessCommand(IExecutionContext context, Command command)
@@ -39,7 +51,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
 
             Guid projectId = context.Variables.System_TeamProjectId ?? Guid.Empty;
             ArgUtil.NotEmpty(projectId, nameof(projectId));
-            
+
             string releaseId = context.Variables.Release_ReleaseId;
             ArgUtil.NotNull(releaseId, nameof(releaseId));
 
@@ -78,7 +90,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
             commandContext.Output(StringUtil.Loc("RMUpdateReleaseNameForRelease", release.Name, release.Id));
             context.Variables.Set("release.releaseName", release.Name);
         }
-    }    
+    }
 
     internal static class WellKnownReleaseCommand
     {

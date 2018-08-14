@@ -225,7 +225,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             folder = folder.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
 
             // Check if the dir is a prefix of the path (if not, it isn't relative at all).
-            if (!path.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
+            if (!path.StartsWith(folder, IOUtil.FilePathStringComparison))
             {
                 return path;
             }

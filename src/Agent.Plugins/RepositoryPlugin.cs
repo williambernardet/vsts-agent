@@ -80,9 +80,27 @@ namespace Agent.Plugins.Repository
 
             var repoAlias = executionContext.GetInput(Pipelines.PipelineConstants.CheckoutTaskInputs.Repository, true);
             var repo = executionContext.Repositories.Single(x => string.Equals(x.Alias, repoAlias, StringComparison.OrdinalIgnoreCase));
+            var ready = repo.Properties.Get<bool>("ready");
+            if (ready)
+            {
+                var path = repo.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Path);
+                throw new InvalidOperationException($"Repository '{repoAlias}' has already checked out at '{path}'.");
+            }
 
             ISourceProvider sourceProvider = GetSourceProvider(repo.Type);
             await sourceProvider.GetSourceAsync(executionContext, repo, token);
+
+            Dictionary<string, string> properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                {
+                    "ready", bool.TrueString
+                },
+                {
+                    Pipelines.RepositoryPropertyNames.Path, ""
+                }
+            };
+
+            executionContext.SetRepository(repoAlias, properties);
         }
     }
 

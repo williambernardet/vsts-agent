@@ -16,6 +16,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
     {
         public Type ExtensionType => typeof(IWorkerCommandExtension);
 
+        public bool Enabled
+        {
+            get
+            {
+                return true;
+            }
+            set
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
         public string CommandArea => "artifact";
 
         public HostTypes SupportedHostTypes => HostTypes.Build | HostTypes.Release;

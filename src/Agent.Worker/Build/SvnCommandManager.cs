@@ -190,11 +190,21 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 IBuildDirectoryManager buildDirectoryManager = HostContext.GetService<IBuildDirectoryManager>();
                 BuildCleanOption? cleanOption = _context.Variables.Build_Clean;
 
-                buildDirectoryManager.CreateDirectory(
-                _context,
-                description: "source directory",
-                path: rootPath,
-                deleteExisting: !(cleanOption == BuildCleanOption.All || cleanOption == BuildCleanOption.Source));
+                // Delete.
+                if (!(cleanOption == BuildCleanOption.All || cleanOption == BuildCleanOption.Source))
+                {
+                    if (Directory.Exists(rootPath))
+                    {
+                        IOUtil.DeleteDirectory(rootPath, _context.CancellationToken);
+                    }
+                }
+
+                // Create.
+                if (!Directory.Exists(rootPath))
+                {
+                    Directory.CreateDirectory(rootPath);
+                }
+
             }
 
             Dictionary<string, Uri> oldMappings = await GetOldMappings(rootPath);

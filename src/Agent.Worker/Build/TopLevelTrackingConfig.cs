@@ -34,4 +34,34 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         [JsonProperty("lastBuildFolderNumber")]
         public int LastBuildDirectoryNumber { get; set; }
     }
+
+    public sealed class PipelineTopLevelTrackingConfig
+    {
+        [JsonIgnore]
+        public DateTimeOffset? LastPipelineDirectoryCreatedOn { get; set; }
+
+        [JsonProperty("lastPipelineDirectoryCreatedOn")]
+        [EditorBrowsableAttribute(EditorBrowsableState.Never)]
+        public string LastPipelineDirectoryCreatedOnString
+        {
+            get
+            {
+                return string.Format(CultureInfo.InvariantCulture, "{0}", LastPipelineDirectoryCreatedOn);
+            }
+
+            set
+            {
+                if (string.IsNullOrEmpty(value))
+                {
+                    LastPipelineDirectoryCreatedOn = null;
+                    return;
+                }
+
+                LastPipelineDirectoryCreatedOn = DateTimeOffset.Parse(value, CultureInfo.InvariantCulture);
+            }
+        }
+
+        [JsonProperty("lastPipelineDirectoryNumber")]
+        public int LastPipelineDirectoryNumber { get; set; }
+    }
 }

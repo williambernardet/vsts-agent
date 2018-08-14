@@ -191,6 +191,17 @@ namespace Agent.Sdk
             Output($"##vso[task.settaskvariable variable={Escape(variable)};issecret={isSecret.ToString()};]{Escape(value)}");
         }
 
+        public void SetRepository(string alias, Dictionary<string, string> properties)
+        {
+            string commandProperties = string.Empty;
+            foreach (var property in properties)
+            {
+                commandProperties += $"{property.Key}={Escape(property.Value)};";
+            }
+
+            Output($"##vso[agentplugin.setrepository alias={Escape(alias)};{commandProperties}]");
+        }
+
         public void Command(string command)
         {
             Output($"##[command]{Escape(command)}");

@@ -47,7 +47,16 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                 throw new NotSupportedException(Data.Target);
             }
 
-            await agentPlugin.RunPluginTaskAsync(ExecutionContext, Data.Target, Inputs, Environment, RuntimeVariables, OnDataReceived);
+            var commandManager = HostContext.GetService<IWorkerCommandManager>();
+            try
+            {
+                commandManager.SetCommandState(ExecutionContext, "agentplugin", true);
+                await agentPlugin.RunPluginTaskAsync(ExecutionContext, Data.Target, Inputs, Environment, RuntimeVariables, OnDataReceived);
+            }
+            finally
+            {
+                commandManager.SetCommandState(ExecutionContext, "agentplugin", false);
+            }
         }
 
         private void OnDataReceived(object sender, ProcessDataReceivedEventArgs e)

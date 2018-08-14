@@ -61,7 +61,7 @@ namespace Microsoft.VisualStudio.Services.Agent
 
         public static class Agent
         {
-            public static readonly string Version = "2.138.6";
+            public static readonly string Version = "2.139.0";
 
 #if OS_LINUX
             public static readonly OSPlatform Platform = OSPlatform.Linux;
@@ -167,6 +167,18 @@ namespace Microsoft.VisualStudio.Services.Agent
                 public static readonly string BuildReleasesAgentConfiguration = "BuildReleasesAgentConfiguration";
                 public static readonly string DeploymentAgentConfiguration = "DeploymentAgentConfiguration";
                 public static readonly string SharedDeploymentAgentConfiguration = "SharedDeploymentAgentConfiguration";
+            }
+
+            public static class Path
+            {
+                public static readonly string PipelineRootMappingDirectory = "PipelineRootMapping";
+                public static readonly string TopLevelTrackingConfigFile = "PipelineMappings.json";
+                public static readonly string TrackingConfigFile = "PipelineFolder.json";
+                public static readonly string SourcesDirectory = "s";
+                public static readonly string ArtifactsDirectory = "a";
+                public static readonly string BinariesDirectory = "b";
+                public static readonly string TestResultsDirectory = "TestResults";
+                public static readonly string GarbageCollectionDirectory = "_gc";
             }
         }
 

@@ -15,6 +15,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Telemetry
 {
     public class TelemetryCommandExtension : AgentService, IWorkerCommandExtension
     {
+        public bool Enabled
+        {
+            get
+            {
+                return true;
+            }
+            set
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
         public HostTypes SupportedHostTypes => HostTypes.All;
 
         public void ProcessCommand(IExecutionContext context, Command command)

@@ -28,6 +28,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.TestResults
 
         public Type ExtensionType => typeof(IWorkerCommandExtension);
 
+        public bool Enabled
+        {
+            get
+            {
+                return true;
+            }
+            set
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
         public string CommandArea => "results";
 
         public HostTypes SupportedHostTypes => HostTypes.All;
