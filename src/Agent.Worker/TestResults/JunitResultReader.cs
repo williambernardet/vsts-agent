@@ -311,8 +311,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.TestResults
                 var timeValue = rootNode.Attributes["time"].Value;
                 if (timeValue != null)
                 {
-                    double timeInSeconds = 0.0;
-                    if (Double.TryParse(timeValue, NumberStyles.Any, NumberFormatInfo.InvariantInfo, out timeInSeconds))
+                    // Ensure that the time data is a positive value within range
+                    if (Double.TryParse(timeValue, NumberStyles.Any, NumberFormatInfo.InvariantInfo, out double timeInSeconds) 
+                        && !Double.IsNaN(timeInSeconds) 
+                        && timeInSeconds >= 0)
                     {
                         time = TimeSpan.FromSeconds(timeInSeconds);
                         TimeDataAvailable = true;
