@@ -314,6 +314,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.TestResults
                     // Ensure that the time data is a positive value within range
                     if (Double.TryParse(timeValue, NumberStyles.Any, NumberFormatInfo.InvariantInfo, out double timeInSeconds) 
                         && !Double.IsNaN(timeInSeconds) 
+                        && !Double.IsInfinity(timeInSeconds)
                         && timeInSeconds >= 0)
                     {
                         time = TimeSpan.FromSeconds(timeInSeconds);
