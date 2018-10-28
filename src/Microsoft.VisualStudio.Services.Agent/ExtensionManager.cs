@@ -47,6 +47,7 @@ namespace Microsoft.VisualStudio.Services.Agent
 #elif OS_WINDOWS
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Capabilities.PowerShellCapabilitiesProvider, Microsoft.VisualStudio.Services.Agent");
 #endif
+                    Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Capabilities.UserCapabilitiesProvider, Microsoft.VisualStudio.Services.Agent");
                     break;
                 // Listener agent configuration providers
                 case "Microsoft.VisualStudio.Services.Agent.Listener.Configuration.IConfigurationProvider":
