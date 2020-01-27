@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
@@ -17,7 +20,7 @@ namespace Microsoft.VisualStudio.Services.Agent
         event EventHandler<ThrottlingEventArgs> JobServerQueueThrottling;
         Task ShutdownAsync();
         void Start(Pipelines.AgentJobRequestMessage jobRequest);
-        void QueueWebConsoleLine(Guid stepRecordId, string line);
+        void QueueWebConsoleLine(Guid stepRecordId, string line, long lineNumber);
         void QueueFileUpload(Guid timelineId, Guid timelineRecordId, string type, string name, string path, bool deleteSource);
         void QueueTimelineRecordUpdate(Guid timelineId, TimelineRecord timelineRecord);
     }
@@ -62,13 +65,12 @@ namespace Microsoft.VisualStudio.Services.Agent
         private Task[] _allDequeueTasks;
         private readonly TaskCompletionSource<int> _jobCompletionSource = new TaskCompletionSource<int>();
         private bool _queueInProcess = false;
-        private ITerminal _term;
 
         public event EventHandler<ThrottlingEventArgs> JobServerQueueThrottling;
 
         // Web console dequeue will start with process queue every 250ms for the first 60*4 times (~60 seconds).
         // Then the dequeue will happen every 500ms.
-        // In this way, customer still can get instance live console output on job start, 
+        // In this way, customer still can get instance live console output on job start,
         // at the same time we can cut the load to server after the build run for more than 60s
         private int _webConsoleLineAggressiveDequeueCount = 0;
         private const int _webConsoleLineAggressiveDequeueLimit = 4 * 60;
@@ -84,11 +86,6 @@ namespace Microsoft.VisualStudio.Services.Agent
         public void Start(Pipelines.AgentJobRequestMessage jobRequest)
         {
             Trace.Entering();
-            if (HostContext.RunMode == RunMode.Local)
-            {
-                _term = HostContext.GetService<ITerminal>();
-                return;
-            }
 
             if (_queueInProcess)
             {
@@ -128,10 +125,6 @@ namespace Microsoft.VisualStudio.Services.Agent
         // TimelineUpdate queue error will become critical when timeline records contain output variabls.
         public async Task ShutdownAsync()
         {
-            if (HostContext.RunMode == RunMode.Local)
-            {
-                return;
-            }
 
             if (!_queueInProcess)
             {
@@ -165,35 +158,15 @@ namespace Microsoft.VisualStudio.Services.Agent
             Trace.Info("All queue process tasks have been stopped, and all queues are drained.");
         }
 
-        public void QueueWebConsoleLine(Guid stepRecordId, string line)
+        public void QueueWebConsoleLine(Guid stepRecordId, string line, long lineNumber)
         {
             Trace.Verbose("Enqueue web console line queue: {0}", line);
-            if (HostContext.RunMode == RunMode.Local)
-            {
-                if ((line ?? string.Empty).StartsWith("##[section]"))
-                {
-                    Console.WriteLine("******************************************************************************");
-                    Console.WriteLine(line.Substring("##[section]".Length));
-                    Console.WriteLine("******************************************************************************");
-                }
-                else
-                {
-                    Console.WriteLine(line);
-                }
 
-                return;
-            }
-
-            _webConsoleLineQueue.Enqueue(new ConsoleLineInfo(stepRecordId, line));
+            _webConsoleLineQueue.Enqueue(new ConsoleLineInfo(stepRecordId, line, lineNumber));
         }
 
         public void QueueFileUpload(Guid timelineId, Guid timelineRecordId, string type, string name, string path, bool deleteSource)
         {
-            if (HostContext.RunMode == RunMode.Local)
-            {
-                return;
-            }
-
             ArgUtil.NotEmpty(timelineId, nameof(timelineId));
             ArgUtil.NotEmpty(timelineRecordId, nameof(timelineRecordId));
 
@@ -214,11 +187,6 @@ namespace Microsoft.VisualStudio.Services.Agent
 
         public void QueueTimelineRecordUpdate(Guid timelineId, TimelineRecord timelineRecord)
         {
-            if (HostContext.RunMode == RunMode.Local)
-            {
-                return;
-            }
-
             ArgUtil.NotEmpty(timelineId, nameof(timelineId));
             ArgUtil.NotNull(timelineRecord, nameof(timelineRecord));
             ArgUtil.NotEmpty(timelineRecord.Id, nameof(timelineRecord.Id));
@@ -250,7 +218,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 }
 
                 // Group consolelines by timeline record of each step
-                Dictionary<Guid, List<string>> stepsConsoleLines = new Dictionary<Guid, List<string>>();
+                Dictionary<Guid, List<TimelineRecordLogLine>> stepsConsoleLines = new Dictionary<Guid, List<TimelineRecordLogLine>>();
                 List<Guid> stepRecordIds = new List<Guid>(); // We need to keep lines in order
                 int linesCounter = 0;
                 ConsoleLineInfo lineInfo;
@@ -258,21 +226,23 @@ namespace Microsoft.VisualStudio.Services.Agent
                 {
                     if (!stepsConsoleLines.ContainsKey(lineInfo.StepRecordId))
                     {
-                        stepsConsoleLines[lineInfo.StepRecordId] = new List<string>();
+                        stepsConsoleLines[lineInfo.StepRecordId] = new List<TimelineRecordLogLine>();
                         stepRecordIds.Add(lineInfo.StepRecordId);
                     }
 
-                    if (!string.IsNullOrEmpty(lineInfo.Line) && lineInfo.Line.Length > 1024)
+                    if (lineInfo.Line?.Length > 1024)
                     {
                         Trace.Verbose("Web console line is more than 1024 chars, truncate to first 1024 chars");
                         lineInfo.Line = $"{lineInfo.Line.Substring(0, 1024)}...";
                     }
 
-                    stepsConsoleLines[lineInfo.StepRecordId].Add(lineInfo.Line);
+                    stepsConsoleLines[lineInfo.StepRecordId].Add(new TimelineRecordLogLine(lineInfo.Line, lineInfo.LineNumber));
                     linesCounter++;
 
                     // process at most about 500 lines of web console line during regular timer dequeue task.
-                    if (!runOnce && linesCounter > 500)
+                    // Send the first line of output to the customer right away
+                    // It might take a while to reach 500 line outputs, which would cause delays before customers see the first line
+                    if ((!runOnce && linesCounter > 500) || _firstConsoleOutputs)
                     {
                         break;
                     }
@@ -283,13 +253,13 @@ namespace Microsoft.VisualStudio.Services.Agent
                 {
                     // Split consolelines into batch, each batch will container at most 100 lines.
                     int batchCounter = 0;
-                    List<List<string>> batchedLines = new List<List<string>>();
+                    List<List<TimelineRecordLogLine>> batchedLines = new List<List<TimelineRecordLogLine>>();
                     foreach (var line in stepsConsoleLines[stepRecordId])
                     {
                         var currentBatch = batchedLines.ElementAtOrDefault(batchCounter);
                         if (currentBatch == null)
                         {
-                            batchedLines.Add(new List<string>());
+                            batchedLines.Add(new List<TimelineRecordLogLine>());
                             currentBatch = batchedLines.ElementAt(batchCounter);
                         }
 
@@ -311,7 +281,6 @@ namespace Microsoft.VisualStudio.Services.Agent
                         {
                             Trace.Info($"Skip {batchedLines.Count - 2} batches web console lines for last run");
                             batchedLines = batchedLines.TakeLast(2).ToList();
-                            batchedLines[0].Insert(0, "...");
                         }
 
                         int errorCount = 0;
@@ -320,11 +289,11 @@ namespace Microsoft.VisualStudio.Services.Agent
                             try
                             {
                                 // we will not requeue failed batch, since the web console lines are time sensitive.
-                                await _jobServer.AppendTimelineRecordFeedAsync(_scopeIdentifier, _hubName, _planId, _jobTimelineId, _jobTimelineRecordId, stepRecordId, batch, default(CancellationToken));
+                                await _jobServer.AppendTimelineRecordFeedAsync(_scopeIdentifier, _hubName, _planId, _jobTimelineId, _jobTimelineRecordId, stepRecordId, batch.Select(x => x.Line).ToList(), batch[0].LineNumber, default(CancellationToken));
                                 if (_firstConsoleOutputs)
                                 {
-                                    HostContext.WritePerfCounter($"WorkerJobServerQueueAppendFirstConsoleOutput_{_planId.ToString()}");
                                     _firstConsoleOutputs = false;
+                                    HostContext.WritePerfCounter("WorkerJobServerQueueAppendFirstConsoleOutput");
                                 }
                             }
                             catch (Exception ex)
@@ -500,8 +469,8 @@ namespace Microsoft.VisualStudio.Services.Agent
 
                 if (runOnce)
                 {
-                    // continue process timeline records update, 
-                    // we might have more records need update, 
+                    // continue process timeline records update,
+                    // we might have more records need update,
                     // since we just create a new sub-timeline
                     if (pendingSubtimelineUpdate)
                     {
@@ -632,7 +601,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                     var taskLog = await _jobServer.CreateLogAsync(_scopeIdentifier, _hubName, _planId, new TaskLog(String.Format(@"logs\{0:D}", file.TimelineRecordId)), default(CancellationToken));
 
                     // Upload the contents
-                    using (FileStream fs = File.Open(file.Path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    using (FileStream fs = File.Open(file.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                     {
                         var logUploaded = await _jobServer.AppendLogContentAsync(_scopeIdentifier, _hubName, _planId, taskLog.Id, fs, default(CancellationToken));
                     }
@@ -644,7 +613,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 else
                 {
                     // Create attachment
-                    using (FileStream fs = File.Open(file.Path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    using (FileStream fs = File.Open(file.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                     {
                         var result = await _jobServer.CreateAttachmentAsync(_scopeIdentifier, _hubName, _planId, file.TimelineId, file.TimelineRecordId, file.Type, file.Name, fs, default(CancellationToken));
                     }
@@ -689,13 +658,15 @@ namespace Microsoft.VisualStudio.Services.Agent
 
     internal class ConsoleLineInfo
     {
-        public ConsoleLineInfo(Guid recordId, string line)
+        public ConsoleLineInfo(Guid recordId, string line, long lineNumber)
         {
             this.StepRecordId = recordId;
             this.Line = line;
+            this.LineNumber = lineNumber;
         }
 
         public Guid StepRecordId { get; set; }
         public string Line { get; set; }
+        public long LineNumber { get; set; }
     }
 }

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Generic;
@@ -31,11 +34,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
         protected override string Switch => "/";
 
-        public override string FilePath => Path.Combine(HostContext.GetDirectory(WellKnownDirectory.ServerOM), "tf.exe");
+        public override string FilePath => Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Tf), "tf.exe");
 
-        private string AppConfigFile => Path.Combine(HostContext.GetDirectory(WellKnownDirectory.ServerOM), "tf.exe.config");
+        private string AppConfigFile => Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Tf), "tf.exe.config");
 
-        private string AppConfigRestoreFile => Path.Combine(HostContext.GetDirectory(WellKnownDirectory.ServerOM), "tf.exe.config.restore");
+        private string AppConfigRestoreFile => Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Tf), "tf.exe.config.restore");
 
         // TODO: Remove AddAsync after last-saved-checkin-metadata problem is fixed properly.
         public async Task AddAsync(string localPath)
@@ -271,7 +274,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
         public async Task WorkspaceNewAsync()
         {
-            await RunCommandAsync("vc", "workspace", "/new", "/location:local", "/permission:Public", WorkspaceName);
+            var useServerWorkspace = ExecutionContext.Variables.Build_UseServerWorkspaces ?? false;
+            ExecutionContext.Debug($"useServerWorkspace is set to : '{useServerWorkspace}'");
+
+            if (useServerWorkspace)
+            {
+                await RunCommandAsync("vc", "workspace", "/new", "/location:server", "/permission:Public", WorkspaceName);
+            }
+            else
+            {
+                await RunCommandAsync("vc", "workspace", "/new", "/location:local", "/permission:Public", WorkspaceName);
+            }
         }
 
         public async Task<ITfsVCWorkspace[]> WorkspacesAsync(bool matchWorkspaceNameOnAnyComputer = false)

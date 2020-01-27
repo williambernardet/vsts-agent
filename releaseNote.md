@@ -1,13 +1,10 @@
 ## Features
-  - Consume dotnet core 2.1, add win-x86 and linux-arm agent. #1844
-  
+
 ## Bugs
-  - N/A
 
 ## Misc
-  - N/A
 
-## Agent Downloads  
+## Agent Downloads
 
 |         | Package                                                                                                       |
 | ------- | ----------------------------------------------------------------------------------------------------------- |
@@ -16,8 +13,9 @@
 | macOS   | [vsts-agent-osx-x64-<AGENT_VERSION>.tar.gz](https://vstsagentpackage.azureedge.net/agent/<AGENT_VERSION>/vsts-agent-osx-x64-<AGENT_VERSION>.tar.gz)   |
 | Linux x64  | [vsts-agent-linux-x64-<AGENT_VERSION>.tar.gz](https://vstsagentpackage.azureedge.net/agent/<AGENT_VERSION>/vsts-agent-linux-x64-<AGENT_VERSION>.tar.gz) |
 | Linux ARM  | [vsts-agent-linux-arm-<AGENT_VERSION>.tar.gz](https://vstsagentpackage.azureedge.net/agent/<AGENT_VERSION>/vsts-agent-linux-arm-<AGENT_VERSION>.tar.gz) |
+| RHEL 6 x64  | [vsts-agent-rhel.6-x64-<AGENT_VERSION>.tar.gz](https://vstsagentpackage.azureedge.net/agent/<AGENT_VERSION>/vsts-agent-rhel.6-x64-<AGENT_VERSION>.tar.gz) |
 
-After Download:  
+After Download:
 
 ## Windows x64
 
@@ -52,4 +50,11 @@ C:\myagent> Add-Type -AssemblyName System.IO.Compression.FileSystem ; [System.IO
 ``` bash
 ~/$ mkdir myagent && cd myagent
 ~/myagent$ tar xzf ~/Downloads/vsts-agent-linux-arm-<AGENT_VERSION>.tar.gz
+```
+
+## RHEL 6 x64
+
+``` bash
+~/$ mkdir myagent && cd myagent
+~/myagent$ tar xzf ~/Downloads/vsts-agent-rhel.6-x64-<AGENT_VERSION>.tar.gz
 ```

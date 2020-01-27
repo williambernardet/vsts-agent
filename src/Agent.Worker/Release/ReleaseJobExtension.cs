@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -313,10 +316,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
                 releaseDefinition);
 
             ReleaseWorkingFolder = releaseTrackingConfig.ReleaseDirectory;
-            ArtifactsWorkingFolder = Path.Combine(
-                HostContext.GetDirectory(WellKnownDirectory.Work),
-                releaseTrackingConfig.ReleaseDirectory,
-                Constants.Release.Path.ArtifactsDirectory);
+            ArtifactsWorkingFolder = string.IsNullOrEmpty(executionContext.Variables.Release_ArtifactsDirectory)
+                ? Path.Combine(
+                        HostContext.GetDirectory(WellKnownDirectory.Work),
+                        releaseTrackingConfig.ReleaseDirectory,
+                        Constants.Release.Path.ArtifactsDirectory)
+                : executionContext.Variables.Release_ArtifactsDirectory;
             executionContext.Output($"Release folder: {ArtifactsWorkingFolder}");
 
             // Ensure directory exist
@@ -388,11 +393,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
             Trace.Entering();
 
             // Always set the AgentReleaseDirectory because this is set as the WorkingDirectory of the task.
-            executionContext.Variables.Set(Constants.Variables.Release.AgentReleaseDirectory, artifactsDirectoryPath);
+            executionContext.SetVariable(Constants.Variables.Release.AgentReleaseDirectory, artifactsDirectoryPath);
 
             // Set the ArtifactsDirectory even when artifacts downloaded is skipped. Reason: The task might want to access the old artifact.
-            executionContext.Variables.Set(Constants.Variables.Release.ArtifactsDirectory, artifactsDirectoryPath);
-            executionContext.Variables.Set(Constants.Variables.System.DefaultWorkingDirectory, artifactsDirectoryPath);
+            executionContext.SetVariable(Constants.Variables.Release.ArtifactsDirectory, artifactsDirectoryPath);
+            executionContext.SetVariable(Constants.Variables.System.DefaultWorkingDirectory, artifactsDirectoryPath);
         }
 
         private void LogEnvironmentVariables(IExecutionContext executionContext)
@@ -428,7 +433,28 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
                 Version = agentArtifactDefinition.Version
             };
 
-            artifactDefinition.Details = extension.GetArtifactDetails(executionContext, agentArtifactDefinition);
+            RetryExecutor retryExecutor = new RetryExecutor();
+                retryExecutor.ShouldRetryAction = (ex) =>
+                {
+                    bool retry = true;
+                    if (ex is InvalidOperationException)
+                    {
+                        retry = false;
+                    }
+                    else
+                    {
+                        Trace.Warning(ex.ToString());
+                    }
+
+                    return retry;
+                };
+
+            retryExecutor.Execute(
+                () =>
+                {
+                    artifactDefinition.Details = extension.GetArtifactDetails(executionContext, agentArtifactDefinition);
+                });
+
             return artifactDefinition;
         }
 
@@ -444,7 +470,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
                 Message = StringUtil.Loc("DownloadArtifactsFailed", ex)
             };
 
-            issue.Data.Add("AgentVersion", Constants.Agent.Version);
+            issue.Data.Add("AgentVersion", BuildConstants.AgentPackage.Version);
             issue.Data.Add("code", code);
             issue.Data.Add("TaskId", DownloadArtifactsTaskId.ToString());
 

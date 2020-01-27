@@ -1,12 +1,12 @@
-using Microsoft.TeamFoundation.Build.WebApi;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
-using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
@@ -15,9 +15,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
     {
         public override Type ExtensionType => typeof(IJobExtension);
         public override HostTypes HostType => HostTypes.Build;
-
-        private Pipelines.RepositoryResource Repository { set; get; }
-        private ISourceProvider SourceProvider { set; get; }
 
         public override IStep GetExtensionPreJobStep(IExecutionContext jobContext)
         {
@@ -34,10 +31,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         public override string GetRootedPath(IExecutionContext context, string path)
         {
             string rootedPath = null;
+            TryGetRepositoryInfo(context, out RepositoryInfo repoInfo);
 
-            if (SourceProvider != null && Repository != null)
+            if (repoInfo.SourceProvider != null &&
+                repoInfo.Repository != null &&
+                StringUtil.ConvertToBoolean(repoInfo.Repository.Properties.Get<string>("__AZP_READY")))
             {
-                path = SourceProvider.GetLocalPath(context, Repository, path) ?? string.Empty;
+                path = repoInfo.SourceProvider.GetLocalPath(context, repoInfo.Repository, path) ?? string.Empty;
                 Trace.Info($"Build JobExtension resolving path use source provide: {path}");
 
                 if (!string.IsNullOrEmpty(path) &&
@@ -59,10 +59,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             }
 
             string defaultPathRoot = null;
-            if (Repository != null)
+            if (RepositoryUtil.HasMultipleCheckouts(context.JobSettings))
             {
-                defaultPathRoot = Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Path);
+                // If there are multiple checkouts, set the default directory to the sources root folder (_work/1/s)
+                defaultPathRoot = context.Variables.Get(Constants.Variables.Build.SourcesDirectory);
                 Trace.Info($"The Default Path Root of Build JobExtension is build.sourcesDirectory: {defaultPathRoot}");
+            }
+            else if (repoInfo.Repository != null)
+            {
+                // If there is only one checkout/repository, set it to the repository path
+                defaultPathRoot = repoInfo.Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Path);
+                Trace.Info($"The Default Path Root of Build JobExtension is repository.path: {defaultPathRoot}");
             }
 
             if (defaultPathRoot != null && defaultPathRoot.IndexOfAny(Path.GetInvalidPathChars()) < 0 &&
@@ -93,19 +100,23 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         public override void ConvertLocalPath(IExecutionContext context, string localPath, out string repoName, out string sourcePath)
         {
             repoName = "";
+            TryGetRepositoryInfoFromLocalPath(context, localPath, out RepositoryInfo repoInfo);
 
             // If no repo was found, send back an empty repo with original path.
             sourcePath = localPath;
 
             if (!string.IsNullOrEmpty(localPath) &&
                 File.Exists(localPath) &&
-                Repository != null &&
-                SourceProvider != null)
+                repoInfo.Repository != null &&
+                repoInfo.SourceProvider != null)
             {
                 // If we found a repo, calculate the relative path to the file
-                repoName = Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name);
-                var repoPath = Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Path);
-                sourcePath = IOUtil.MakeRelative(localPath, repoPath);
+                repoName = repoInfo.Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name);
+                var repoPath = repoInfo.Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Path);
+                if (!string.IsNullOrEmpty(repoPath))
+                {
+                    sourcePath = IOUtil.MakeRelative(localPath, repoPath);
+                }
             }
         }
 
@@ -126,67 +137,40 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 return;
             }
 
-            // We only support checkout one repository at this time.
-            if (!TrySetPrimaryRepositoryAndProviderInfo(executionContext))
+            // We set the variables based on the 'self' repository
+            if (!TryGetRepositoryInfo(executionContext, out RepositoryInfo repoInfo))
             {
                 throw new Exception(StringUtil.Loc("SupportedRepositoryEndpointNotFound"));
             }
 
-            executionContext.Debug($"Primary repository: {Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name)}. repository type: {Repository.Type}");
+            executionContext.Debug($"Primary repository: {repoInfo.Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name)}. repository type: {repoInfo.Repository.Type}");
 
             // Set the repo variables.
-            if (!string.IsNullOrEmpty(Repository.Id)) // TODO: Move to const after source artifacts PR is merged.
+            if (!string.IsNullOrEmpty(repoInfo.Repository.Id)) // TODO: Move to const after source artifacts PR is merged.
             {
-                executionContext.Variables.Set(Constants.Variables.Build.RepoId, Repository.Id);
+                executionContext.SetVariable(Constants.Variables.Build.RepoId, repoInfo.Repository.Id);
             }
 
-            executionContext.Variables.Set(Constants.Variables.Build.RepoName, Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name));
-            executionContext.Variables.Set(Constants.Variables.Build.RepoProvider, ConvertToLegacyRepositoryType(Repository.Type));
-            executionContext.Variables.Set(Constants.Variables.Build.RepoUri, Repository.Url?.AbsoluteUri);
-
-            var checkoutTask = steps.SingleOrDefault(x => x.IsCheckoutTask()) as Pipelines.TaskStep;
-            if (checkoutTask != null)
-            {
-                if (checkoutTask.Inputs.ContainsKey(Pipelines.PipelineConstants.CheckoutTaskInputs.Submodules))
-                {
-                    executionContext.Variables.Set(Constants.Variables.Build.RepoGitSubmoduleCheckout, Boolean.TrueString);
-                }
-                else
-                {
-                    executionContext.Variables.Set(Constants.Variables.Build.RepoGitSubmoduleCheckout, Boolean.FalseString);
-                }
-
-                // overwrite primary repository's clean value if build.repository.clean is sent from server. this is used by tfvc gated check-in
-                bool? repoClean = executionContext.Variables.GetBoolean(Constants.Variables.Build.RepoClean);
-                if (repoClean != null)
-                {
-                    checkoutTask.Inputs[Pipelines.PipelineConstants.CheckoutTaskInputs.Clean] = repoClean.Value.ToString();
-                }
-                else
-                {
-                    if (checkoutTask.Inputs.ContainsKey(Pipelines.PipelineConstants.CheckoutTaskInputs.Clean))
-                    {
-                        executionContext.Variables.Set(Constants.Variables.Build.RepoClean, checkoutTask.Inputs[Pipelines.PipelineConstants.CheckoutTaskInputs.Clean]);
-                    }
-                    else
-                    {
-                        executionContext.Variables.Set(Constants.Variables.Build.RepoClean, Boolean.FalseString);
-                    }
-                }
-            }
+            executionContext.SetVariable(Constants.Variables.Build.RepoName, repoInfo.Repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Name));
+            executionContext.SetVariable(Constants.Variables.Build.RepoProvider, ConvertToLegacyRepositoryType(repoInfo.Repository.Type));
+            executionContext.SetVariable(Constants.Variables.Build.RepoUri, repoInfo.Repository.Url?.AbsoluteUri);
 
             // Prepare the build directory.
             executionContext.Output(StringUtil.Loc("PrepareBuildDir"));
             var directoryManager = HostContext.GetService<IBuildDirectoryManager>();
             TrackingConfig trackingConfig = directoryManager.PrepareDirectory(
                 executionContext,
-                Repository,
+                executionContext.Repositories,
                 workspace);
+
+            string _workDirectory = HostContext.GetDirectory(WellKnownDirectory.Work);
+            string pipelineWorkspaceDirectory = Path.Combine(_workDirectory, trackingConfig.BuildDirectory);
+
+            UpdateCheckoutTasksAndVariables(executionContext, steps, repoInfo, pipelineWorkspaceDirectory);
 
             // Set the directory variables.
             executionContext.Output(StringUtil.Loc("SetBuildVars"));
-            string _workDirectory = HostContext.GetDirectory(WellKnownDirectory.Work);
-            executionContext.SetVariable(Constants.Variables.Agent.BuildDirectory, Path.Combine(_workDirectory, trackingConfig.BuildDirectory), isFilePath: true);
+            executionContext.SetVariable(Constants.Variables.Agent.BuildDirectory, pipelineWorkspaceDirectory, isFilePath: true);
             executionContext.SetVariable(Constants.Variables.System.ArtifactsDirectory, Path.Combine(_workDirectory, trackingConfig.ArtifactsDirectory), isFilePath: true);
             executionContext.SetVariable(Constants.Variables.System.DefaultWorkingDirectory, Path.Combine(_workDirectory, trackingConfig.SourcesDirectory), isFilePath: true);
             executionContext.SetVariable(Constants.Variables.Common.TestResultsDirectory, Path.Combine(_workDirectory, trackingConfig.TestResultsDirectory), isFilePath: true);
@@ -195,28 +179,116 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             executionContext.SetVariable(Constants.Variables.Build.StagingDirectory, Path.Combine(_workDirectory, trackingConfig.ArtifactsDirectory), isFilePath: true);
             executionContext.SetVariable(Constants.Variables.Build.ArtifactStagingDirectory, Path.Combine(_workDirectory, trackingConfig.ArtifactsDirectory), isFilePath: true);
             executionContext.SetVariable(Constants.Variables.Build.RepoLocalPath, Path.Combine(_workDirectory, trackingConfig.SourcesDirectory), isFilePath: true);
-
-            Repository.Properties.Set<string>(Pipelines.RepositoryPropertyNames.Path, Path.Combine(_workDirectory, trackingConfig.SourcesDirectory));
+            executionContext.SetVariable(Constants.Variables.Pipeline.Workspace, pipelineWorkspaceDirectory, isFilePath: true);
         }
 
-        private bool TrySetPrimaryRepositoryAndProviderInfo(IExecutionContext executionContext)
+        private void UpdateCheckoutTasksAndVariables(IExecutionContext executionContext, IList<JobStep> steps, RepositoryInfo repoInfo, string pipelineWorkspaceDirectory)
         {
-            // Return the first repository resource and its source provider.
-            Trace.Entering();
-            var extensionManager = HostContext.GetService<IExtensionManager>();
-            List<ISourceProvider> sourceProviders = extensionManager.GetExtensions<ISourceProvider>();
-            Repository = executionContext.Repositories.SingleOrDefault();
-            if (Repository != null)
-            {
-                SourceProvider = sourceProviders.FirstOrDefault(x => string.Equals(x.RepositoryType, Repository.Type, StringComparison.OrdinalIgnoreCase));
+            bool? submoduleCheckout = null;
+            // RepoClean may be set from the server, so start with the server value
+            bool? repoClean = executionContext.Variables.GetBoolean(Constants.Variables.Build.RepoClean);
 
-                if (SourceProvider != null)
+            foreach (var checkoutTask in steps.Where(x => x.IsCheckoutTask()).Select(x => x as TaskStep))
+            {
+                if (!checkoutTask.Inputs.TryGetValue(PipelineConstants.CheckoutTaskInputs.Repository, out string repositoryAlias))
                 {
-                    return true;
+                    // If the checkout task isn't associated with a repo, just skip it
+                    Trace.Info($"Checkout task {checkoutTask.Name} does not have a repository property.");
+                    continue;
+                }
+
+                // Update the checkout "Clean" property for all repos, if the variable was set by the server.
+                if (repoClean != null)
+                {
+                    checkoutTask.Inputs[PipelineConstants.CheckoutTaskInputs.Clean] = repoClean.Value.ToString();
+                }
+
+                // If this is the primary repository, use it to get the variable values
+                if (RepositoryUtil.IsPrimaryRepositoryName(repositoryAlias))
+                {
+                    submoduleCheckout = checkoutTask.Inputs.ContainsKey(PipelineConstants.CheckoutTaskInputs.Submodules);
+                    repoClean = repoClean ?? checkoutTask.Inputs.ContainsKey(PipelineConstants.CheckoutTaskInputs.Clean);
+                }
+
+                // Update the checkout task display name if not already set
+                if (string.IsNullOrEmpty(checkoutTask.DisplayName) ||
+                    string.Equals(checkoutTask.DisplayName, "Checkout", StringComparison.OrdinalIgnoreCase) ||      // this is the default for jobs
+                    string.Equals(checkoutTask.DisplayName, checkoutTask.Name, StringComparison.OrdinalIgnoreCase)) // this is the default for deployment jobs
+                {
+                    var repository = RepositoryUtil.GetRepository(executionContext.Repositories, repositoryAlias);
+                    if (repository != null)
+                    {
+                        string repoName = repository.Properties.Get<string>(RepositoryPropertyNames.Name);
+                        string version = RepositoryUtil.TrimStandardBranchPrefix(repository.Properties.Get<string>(RepositoryPropertyNames.Ref));
+                        string path = null;
+                        if (checkoutTask.Inputs.ContainsKey(PipelineConstants.CheckoutTaskInputs.Path))
+                        {
+                            path = checkoutTask.Inputs[PipelineConstants.CheckoutTaskInputs.Path];
+                        }
+                        else
+                        {
+                            path = IOUtil.MakeRelative(repository.Properties.Get<string>(RepositoryPropertyNames.Path), pipelineWorkspaceDirectory);
+                        }
+                        checkoutTask.DisplayName = StringUtil.Loc("CheckoutTaskDisplayNameFormat", repoName, version, path);
+                    }
+                    else
+                    {
+                        Trace.Info($"Checkout task {checkoutTask.Name} has a repository property {repositoryAlias} that does not match any repository resource.");
+                    }
                 }
             }
 
-            return false;
+            // Set variables
+            if (submoduleCheckout.HasValue)
+            {
+                executionContext.SetVariable(Constants.Variables.Build.RepoGitSubmoduleCheckout, submoduleCheckout.Value.ToString());
+            }
+
+            if (repoClean.HasValue)
+            {
+                executionContext.SetVariable(Constants.Variables.Build.RepoClean, repoClean.Value.ToString());
+            }
+        }
+
+        private bool TryGetRepositoryInfoFromLocalPath(IExecutionContext executionContext, string localPath, out RepositoryInfo repoInfo)
+        {
+            // Return the matching repository resource and its source provider.
+            Trace.Entering();
+            var repo = RepositoryUtil.GetRepositoryForLocalPath(executionContext.Repositories, localPath);
+            repoInfo = new RepositoryInfo
+            {
+                Repository = repo,
+                SourceProvider = GetSourceProvider(executionContext, repo),
+            };
+
+            return repoInfo.SourceProvider != null;
+        }
+
+        private bool TryGetRepositoryInfo(IExecutionContext executionContext, out RepositoryInfo repoInfo)
+        {
+            // Return the matching repository resource and its source provider.
+            Trace.Entering();
+            var repo = RepositoryUtil.GetPrimaryRepository(executionContext.Repositories);
+            repoInfo = new RepositoryInfo
+            {
+                Repository = repo,
+                SourceProvider = GetSourceProvider(executionContext, repo),
+            };
+
+            return repoInfo.SourceProvider != null;
+        }
+
+        private ISourceProvider GetSourceProvider(IExecutionContext executionContext, RepositoryResource repository)
+        {
+            if (repository != null)
+            {
+                var extensionManager = HostContext.GetService<IExtensionManager>();
+                List<ISourceProvider> sourceProviders = extensionManager.GetExtensions<ISourceProvider>();
+                var sourceProvider = sourceProviders.FirstOrDefault(x => string.Equals(x.RepositoryType, repository.Type, StringComparison.OrdinalIgnoreCase));
+                return sourceProvider;
+            }
+
+            return null;
         }
 
         private string ConvertToLegacyRepositoryType(string pipelineRepositoryType)
@@ -253,6 +325,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             {
                 throw new NotSupportedException(pipelineRepositoryType);
             }
+        }
+
+        private class RepositoryInfo
+        {
+            public Pipelines.RepositoryResource Repository { set; get; }
+            public ISourceProvider SourceProvider { set; get; }
         }
     }
 }

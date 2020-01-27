@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
 using Microsoft.TeamFoundation.Build.WebApi;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
@@ -27,11 +31,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
 
     public abstract class Handler : AgentService
     {
-#if OS_WINDOWS
-        // In windows OS the maximum supported size of a environment variable value is 32k.
-        // You can set environment variable greater then 32K, but that variable will not be able to read in node.exe.
-        private const int _environmentVariableMaximumSize = 32766;
-#endif
+        // On Windows, the maximum supported size of a environment variable value is 32k.
+        // You can set environment variables greater then 32K, but Node won't be able to read them.
+        private const int _windowsEnvironmentVariableMaximumSize = 32766;
 
         protected IWorkerCommandManager CommandManager { get; private set; }
 
@@ -238,12 +240,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
 
             Environment[key] = value ?? string.Empty;
 
-#if OS_WINDOWS
-            if (Environment[key].Length > _environmentVariableMaximumSize)
+            if (PlatformUtil.RunningOnWindows && Environment[key].Length > _windowsEnvironmentVariableMaximumSize)
             {
-                ExecutionContext.Warning(StringUtil.Loc("EnvironmentVariableExceedsMaximumLength", key, value.Length, _environmentVariableMaximumSize));
+                ExecutionContext.Warning(StringUtil.Loc("EnvironmentVariableExceedsMaximumLength", key, value.Length, _windowsEnvironmentVariableMaximumSize));
             }
-#endif
         }
 
         protected void AddTaskVariablesToEnvironment()
@@ -278,15 +278,28 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
             }
 
             // Prepend path.
-            string prepend = string.Join(Path.PathSeparator.ToString(), ExecutionContext.PrependPath.Reverse<string>());
-            string taskEnvPATH;
-            Environment.TryGetValue(Constants.PathVariable, out taskEnvPATH);
-            string originalPath = RuntimeVariables.Get(Constants.PathVariable) ?? // Prefer a job variable.
-                taskEnvPATH ?? // Then a task-environment variable.
-                System.Environment.GetEnvironmentVariable(Constants.PathVariable) ?? // Then an environment variable.
-                string.Empty;
-            string newPath = PathUtil.PrependPath(prepend, originalPath);
-            AddEnvironmentVariable(Constants.PathVariable, newPath);
+            var containerStepHost = StepHost as ContainerStepHost;
+            if (containerStepHost != null)
+            {
+                List<string> prepend = new List<string>();
+                foreach (var path in ExecutionContext.PrependPath)
+                {
+                    prepend.Add(ExecutionContext.TranslatePathForStepTarget(path));
+                }
+                containerStepHost.PrependPath = string.Join(Path.PathSeparator.ToString(), prepend.Reverse<string>());
+            }
+            else
+            {
+                string prepend = string.Join(Path.PathSeparator.ToString(), ExecutionContext.PrependPath.Reverse<string>());
+                string taskEnvPATH;
+                Environment.TryGetValue(Constants.PathVariable, out taskEnvPATH);
+                string originalPath = RuntimeVariables.Get(Constants.PathVariable) ?? // Prefer a job variable.
+                    taskEnvPATH ?? // Then a task-environment variable.
+                    System.Environment.GetEnvironmentVariable(Constants.PathVariable) ?? // Then an environment variable.
+                    string.Empty;
+                string newPath = PathUtil.PrependPath(prepend, originalPath);
+                AddEnvironmentVariable(Constants.PathVariable, newPath);
+            }
         }
     }
 }

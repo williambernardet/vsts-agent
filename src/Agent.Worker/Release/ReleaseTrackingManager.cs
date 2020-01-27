@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using Newtonsoft.Json;
 using System;
@@ -90,7 +94,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
                     {
                         Trace.Verbose($"{trackingFile} is a new format tracking file.");
                         ArgUtil.NotNull(tracking.LastRunOn, nameof(tracking.LastRunOn));
-                        executionContext.Output(StringUtil.Loc("ReleaseDirLastUseTIme", Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), tracking.ReleaseDirectory), tracking.LastRunOnString));
+                        executionContext.Output(StringUtil.Loc("ReleaseDirLastUseTIme", Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), tracking.ReleaseDirectory), tracking.LastRunOn?.ToString("u")));
                         if (DateTime.UtcNow - expiration > tracking.LastRunOn)
                         {
                             executionContext.Output(StringUtil.Loc("GCUnusedTrackingFile", trackingFile, expiration.TotalDays));
@@ -171,11 +175,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
                 var workDirectoryDrive = new DriveInfo(HostContext.GetDirectory(WellKnownDirectory.Work));
                 long freeSpace = workDirectoryDrive.AvailableFreeSpace;
                 long totalSpace = workDirectoryDrive.TotalSize;
-#if OS_WINDOWS
-                context.Output($"Working directory belongs to drive: '{workDirectoryDrive.Name}'");
-#else
-                context.Output($"Information about file system on which working directory resides.");
-#endif
+                if (PlatformUtil.RunningOnWindows)
+                {
+                    context.Output($"Working directory belongs to drive: '{workDirectoryDrive.Name}'");
+                }
+                else
+                {
+                    context.Output($"Information about file system on which working directory resides.");
+                }
                 context.Output($"Total size: '{totalSpace / 1024.0 / 1024.0} MB'");
                 context.Output($"Available space: '{freeSpace / 1024.0 / 1024.0} MB'");
             }

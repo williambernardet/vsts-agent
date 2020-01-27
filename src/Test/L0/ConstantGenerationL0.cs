@@ -1,6 +1,8 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System.Collections.Generic;
 using Xunit;
-
 
 namespace Microsoft.VisualStudio.Services.Agent.Tests
 {
@@ -17,6 +19,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
                 "win-x86",
                 "linux-x64",
                 "linux-arm",
+                "rhel.6-x64",
                 "osx-x64"
             };
 

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -142,7 +145,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             ArgUtil.Equal(true, repository.Url.IsAbsoluteUri, nameof(repository.Url.IsAbsoluteUri));
 
             ArgUtil.NotNull(repository.Endpoint, nameof(repository.Endpoint));
-            ServiceEndpoint endpoint = context.Endpoints.Single(x => (repository.Endpoint.Id != Guid.Empty && x.Id == repository.Endpoint.Id) || (repository.Endpoint.Id == Guid.Empty && string.Equals(x.Name, repository.Endpoint.Name, StringComparison.OrdinalIgnoreCase)));
+            ServiceEndpoint endpoint = context.Endpoints.Single(
+                x => (repository.Endpoint.Id != Guid.Empty && x.Id == repository.Endpoint.Id) ||
+                (repository.Endpoint.Id == Guid.Empty && string.Equals(x.Name, repository.Endpoint.Name.ToString(), StringComparison.OrdinalIgnoreCase)));
 
             ArgUtil.NotNull(endpoint.Data, nameof(endpoint.Data));
             ArgUtil.NotNull(endpoint.Authorization, nameof(endpoint.Authorization));

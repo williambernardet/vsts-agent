@@ -1,11 +1,11 @@
-﻿using System;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using System;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System.IO;
 using System.Runtime.Serialization;
 using Microsoft.VisualStudio.Services.Common;
-using System.Security.Cryptography.X509Certificates;
-using System.Net;
-using System.Net.Security;
 using System.Net.Http;
 using Microsoft.VisualStudio.Services.WebApi;
 using Agent.Sdk;

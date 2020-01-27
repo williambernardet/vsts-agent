@@ -12,10 +12,13 @@ node_modules
 _downloads
 _layout
 _package
+_reports
 _dotnetsdk
 TestResults
 TestLogs
 .DS_Store
+**/*.DotSettings.user
 
 #generated
 src/Microsoft.VisualStudio.Services.Agent/BuildConstants.cs
+

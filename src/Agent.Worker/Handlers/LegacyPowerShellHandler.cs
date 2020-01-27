@@ -1,4 +1,7 @@
-﻿using Microsoft.TeamFoundation.DistributedTask.WebApi;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Generic;
@@ -177,6 +180,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
             ArgUtil.NotNull(Inputs, nameof(Inputs));
             ArgUtil.Directory(TaskDirectory, nameof(TaskDirectory));
 
+            // Warn about legacy handler.
+            ExecutionContext.Warning($"Task '{this.Task.Name}' ({this.Task.Version}) is using deprecated task execution handler. The task should use the supported task-lib: https://aka.ms/tasklib");
+
             // Resolve the target script.
             string target = GetTarget();
             ArgUtil.NotNullOrEmpty(target, nameof(target));
@@ -232,6 +238,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                                                                        requireExitCodeZero: false,
                                                                        outputEncoding: null,
                                                                        killProcessOnCancel: false,
+                                                                       redirectStandardIn: null,
+                                                                       inheritConsoleHandler: !ExecutionContext.Variables.Retain_Default_Encoding,
                                                                        cancellationToken: ExecutionContext.CancellationToken);
 
                     // the exit code from vstsPSHost.exe indicate how many error record we get during execution

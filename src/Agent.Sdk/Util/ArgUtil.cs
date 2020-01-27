@@ -1,5 +1,10 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace Microsoft.VisualStudio.Services.Agent.Util
 {
@@ -56,6 +61,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             if (string.IsNullOrEmpty(value))
             {
                 throw new ArgumentNullException(name);
+            }
+        }
+
+        public static void ListNotNullOrEmpty<T>(IEnumerable<T> value, string name)
+        {
+            if (object.ReferenceEquals(value, null))
+            {
+                throw new ArgumentNullException(name);
+            }
+            else if (!value.Any())
+            {
+                throw new ArgumentException(message: $"{name} must have at least one item.", paramName: name);
             }
         }
 

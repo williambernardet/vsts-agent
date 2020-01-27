@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using Microsoft.VisualStudio.Services.Agent.Util;
@@ -11,10 +15,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Net.Http;
-using System.Text;
-using System.IO.Compression;
-using Microsoft.VisualStudio.Services.Agent.Worker.Build;
-using System.Diagnostics;
 using Newtonsoft.Json.Linq;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
@@ -41,15 +41,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             Trace.Info("Job ID {0}", message.JobId);
 
             DateTime jobStartTimeUtc = DateTime.UtcNow;
-
-            // Agent.RunMode
-            RunMode runMode;
-            if (message.Variables.ContainsKey(Constants.Variables.Agent.RunMode) &&
-                Enum.TryParse(message.Variables[Constants.Variables.Agent.RunMode].Value, ignoreCase: true, result: out runMode) &&
-                runMode == RunMode.Local)
-            {
-                HostContext.RunMode = runMode;
-            }
 
             ServiceEndpoint systemConnection = message.Resources.Endpoints.Single(x => string.Equals(x.Name, WellKnownServiceEndpointNames.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
 
@@ -132,25 +123,35 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
                 // Set agent variables.
                 AgentSettings settings = HostContext.GetService<IConfigurationStore>().GetSettings();
-                jobContext.Variables.Set(Constants.Variables.Agent.Id, settings.AgentId.ToString(CultureInfo.InvariantCulture));
+                jobContext.SetVariable(Constants.Variables.Agent.Id, settings.AgentId.ToString(CultureInfo.InvariantCulture));
                 jobContext.SetVariable(Constants.Variables.Agent.HomeDirectory, HostContext.GetDirectory(WellKnownDirectory.Root), isFilePath: true);
-                jobContext.Variables.Set(Constants.Variables.Agent.JobName, message.JobDisplayName);
-                jobContext.Variables.Set(Constants.Variables.Agent.MachineName, Environment.MachineName);
-                jobContext.Variables.Set(Constants.Variables.Agent.Name, settings.AgentName);
-                jobContext.Variables.Set(Constants.Variables.Agent.OS, VarUtil.OS);
-                jobContext.Variables.Set(Constants.Variables.Agent.OSArchitecture, VarUtil.OSArchitecture);
+                jobContext.SetVariable(Constants.Variables.Agent.JobName, message.JobDisplayName);
+                jobContext.SetVariable(Constants.Variables.Agent.MachineName, Environment.MachineName);
+                jobContext.SetVariable(Constants.Variables.Agent.Name, settings.AgentName);
+                jobContext.SetVariable(Constants.Variables.Agent.OS, VarUtil.OS);
+                jobContext.SetVariable(Constants.Variables.Agent.OSArchitecture, VarUtil.OSArchitecture);
                 jobContext.SetVariable(Constants.Variables.Agent.RootDirectory, HostContext.GetDirectory(WellKnownDirectory.Work), isFilePath: true);
-#if OS_WINDOWS
-                jobContext.SetVariable(Constants.Variables.Agent.ServerOMDirectory, HostContext.GetDirectory(WellKnownDirectory.ServerOM), isFilePath: true);
-#else
-                jobContext.Variables.Set(Constants.Variables.Agent.AcceptTeeEula, settings.AcceptTeeEula.ToString());
-#endif
+                if (PlatformUtil.RunningOnWindows)
+                {
+                    jobContext.SetVariable(Constants.Variables.Agent.ServerOMDirectory, HostContext.GetDirectory(WellKnownDirectory.ServerOM), isFilePath: true);
+                }
+                if (!PlatformUtil.RunningOnWindows)
+                {
+                    jobContext.SetVariable(Constants.Variables.Agent.AcceptTeeEula, settings.AcceptTeeEula.ToString());
+                }
                 jobContext.SetVariable(Constants.Variables.Agent.WorkFolder, HostContext.GetDirectory(WellKnownDirectory.Work), isFilePath: true);
                 jobContext.SetVariable(Constants.Variables.System.WorkFolder, HostContext.GetDirectory(WellKnownDirectory.Work), isFilePath: true);
 
                 string toolsDirectory = HostContext.GetDirectory(WellKnownDirectory.Tools);
                 Directory.CreateDirectory(toolsDirectory);
                 jobContext.SetVariable(Constants.Variables.Agent.ToolsDirectory, toolsDirectory, isFilePath: true);
+
+                bool disableGitPrompt = jobContext.Variables.GetBoolean("VSTS_DISABLE_GIT_PROMPT") ?? StringUtil.ConvertToBoolean(Environment.GetEnvironmentVariable("VSTS_DISABLE_GIT_PROMPT"), true);
+                if (disableGitPrompt &&
+                    string.IsNullOrEmpty(jobContext.Variables.Get("GIT_TERMINAL_PROMPT")))
+                {
+                    jobContext.SetVariable("GIT_TERMINAL_PROMPT", "0");
+                }
 
                 // Setup TEMP directories
                 _tempDirectoryManager = HostContext.GetService<ITempDirectoryManager>();
@@ -218,6 +219,16 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     }
                 }
 
+                // Expand container properties
+                foreach (var container in jobContext.Containers)
+                {
+                    this.ExpandProperties(container, jobContext.Variables);
+                }
+                foreach (var sidecar in jobContext.SidecarContainers)
+                {
+                    this.ExpandProperties(sidecar, jobContext.Variables);
+                }
+
                 // Get the job extension.
                 Trace.Info("Getting job extension.");
                 var hostType = jobContext.Variables.System_HostType;
@@ -229,14 +240,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     .FirstOrDefault();
                 ArgUtil.NotNull(jobExtension, nameof(jobExtension));
 
-                List<IStep> jobSteps = new List<IStep>();
+                List<IStep> jobSteps = null;
                 try
                 {
                     Trace.Info("Initialize job. Getting all job steps.");
-                    var initializeResult = await jobExtension.InitializeJob(jobContext, message);
-                    jobSteps.AddRange(initializeResult.PreJobSteps);
-                    jobSteps.AddRange(initializeResult.JobSteps);
-                    jobSteps.AddRange(initializeResult.PostJobStep);
+                    jobSteps = await jobExtension.InitializeJob(jobContext, message);
                 }
                 catch (OperationCanceledException ex) when (jobContext.CancellationToken.IsCancellationRequested)
                 {
@@ -260,25 +268,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 Trace.Verbose($"Job steps: '{string.Join(", ", jobSteps.Select(x => x.DisplayName))}'");
                 HostContext.WritePerfCounter($"WorkerJobInitialized_{message.RequestId.ToString()}");
 
-                bool processCleanup = jobContext.Variables.GetBoolean("process.clean") ?? true;
-                HashSet<string> existingProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                string processLookupId = null;
-                if (processCleanup)
-                {
-                    processLookupId = $"vsts_{Guid.NewGuid()}";
-
-                    // Set the VSTS_PROCESS_LOOKUP_ID env variable.
-                    jobContext.SetVariable(Constants.ProcessLookupId, processLookupId, false, false);
-
-                    // Take a snapshot of current running processes
-                    Dictionary<int, Process> processes = SnapshotProcesses();
-                    foreach (var proc in processes)
-                    {
-                        // Pid_ProcessName
-                        existingProcesses.Add($"{proc.Key}_{proc.Value.ProcessName}");
-                    }
-                }
-
                 // Run all job steps
                 Trace.Info("Run all job steps.");
                 var stepsRunner = HostContext.GetService<IStepsRunner>();
@@ -297,47 +286,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
                 finally
                 {
-                    if (processCleanup)
-                    {
-                        // Only check environment variable for any process that doesn't run before we invoke our process.
-                        Dictionary<int, Process> currentProcesses = SnapshotProcesses();
-                        foreach (var proc in currentProcesses)
-                        {
-                            if (existingProcesses.Contains($"{proc.Key}_{proc.Value.ProcessName}"))
-                            {
-                                Trace.Verbose($"Skip existing process. PID: {proc.Key} ({proc.Value.ProcessName})");
-                            }
-                            else
-                            {
-                                Trace.Info($"Inspecting process environment variables. PID: {proc.Key} ({proc.Value.ProcessName})");
-
-                                string lookupId = null;
-                                try
-                                {
-                                    lookupId = proc.Value.GetEnvironmentVariable(HostContext, Constants.ProcessLookupId);
-                                }
-                                catch (Exception ex)
-                                {
-                                    Trace.Verbose("Ignore any exception during read process environment variables.");
-                                    Trace.Verbose(ex.ToString());
-                                }
-
-                                if (string.Equals(lookupId, processLookupId, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    Trace.Info($"Terminate orphan process: pid ({proc.Key}) ({proc.Value.ProcessName})");
-                                    try
-                                    {
-                                        proc.Value.Kill();
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        Trace.Error("Catch exception during orphan process cleanup.");
-                                        Trace.Error(ex);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    Trace.Info("Finalize job.");
+                    await jobExtension.FinalizeJob(jobContext);
                 }
 
                 Trace.Info($"Job result after all job steps finish: {jobContext.Result ?? TaskResult.Succeeded}");
@@ -377,6 +327,27 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
         }
 
+        public void ExpandProperties(ContainerInfo container, Variables variables)
+        {
+            // Expand port mapping
+            variables.ExpandValues(container.UserPortMappings);
+
+            // Expand volume mounts
+            variables.ExpandValues(container.UserMountVolumes);
+            foreach (var volume in container.UserMountVolumes.Values)
+            {
+                // After mount volume variables are expanded, they are final
+                container.MountVolumes.Add(new MountVolume(volume));
+            }
+
+            // Expand env vars
+            variables.ExpandValues(container.ContainerEnvironmentVariables);
+
+            // Expand image and options strings
+            container.ContainerImage = variables.ExpandValue(nameof(container.ContainerImage), container.ContainerImage);
+            container.ContainerCreateOptions = variables.ExpandValue(nameof(container.ContainerCreateOptions), container.ContainerCreateOptions);
+        }
+
         private async Task<TaskResult> CompleteJobAsync(IJobServer jobServer, IExecutionContext jobContext, Pipelines.AgentJobRequestMessage message, TaskResult? taskResult = null)
         {
             jobContext.Section(StringUtil.Loc("StepFinishing", message.JobDisplayName));
@@ -404,7 +375,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
 
             Trace.Info("Raising job completed event.");
-            var jobCompletedEvent = new JobCompletedEvent(message.RequestId, message.JobId, result);
+            var jobCompletedEvent = new JobCompletedEvent(message.RequestId, message.JobId, result,
+                jobContext.Variables.Get(Constants.Variables.Agent.RunMode) == Constants.Agent.CommandLine.Flags.Once);
 
             var completeJobRetryLimit = 5;
             var exceptions = new List<Exception>();
@@ -466,8 +438,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         // the scheme://hostname:port (how the agent knows the server) is external to our server
         // in other words, an agent may have it's own way (DNS, hostname) of refering
         // to the server.  it owns that.  That's the scheme://hostname:port we will use.
-        // Example: Server's notification url is http://tfsserver:8080/tfs 
-        //          Agent config url is https://tfsserver.mycompany.com:9090/tfs 
+        // Example: Server's notification url is http://tfsserver:8080/tfs
+        //          Agent config url is https://tfsserver.mycompany.com:9090/tfs
         private Uri ReplaceWithConfigUriBase(Uri messageUri)
         {
             AgentSettings settings = HostContext.GetService<IConfigurationStore>().GetSettings();
@@ -542,30 +514,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 message.Variables[Constants.Variables.System.TFServerUrl] = ReplaceWithConfigUriBase(new Uri(tfsServerUrl)).AbsoluteUri;
                 Trace.Info($"Ensure System.TFServerUrl match config url base. {message.Variables[Constants.Variables.System.TFServerUrl].Value}");
             }
-        }
-
-        private Dictionary<int, Process> SnapshotProcesses()
-        {
-            Dictionary<int, Process> snapshot = new Dictionary<int, Process>();
-            foreach (var proc in Process.GetProcesses())
-            {
-                try
-                {
-                    // On Windows, this will throw exception on error.
-                    // On Linux, this will be NULL on error.
-                    if (!string.IsNullOrEmpty(proc.ProcessName))
-                    {
-                        snapshot[proc.Id] = proc;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Trace.Verbose($"Ignore any exception during taking process snapshot of process pid={proc.Id}: '{ex.Message}'.");
-                }
-            }
-
-            Trace.Info($"Total accessible running process: {snapshot.Count}.");
-            return snapshot;
         }
     }
 }

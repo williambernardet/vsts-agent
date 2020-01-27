@@ -1,4 +1,7 @@
-﻿using Microsoft.TeamFoundation.DistributedTask.WebApi;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using Microsoft.VisualStudio.Services.Agent.Worker;
 using Microsoft.VisualStudio.Services.Agent.Worker.Build;
@@ -6,7 +9,6 @@ using Moq;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using Xunit;
 
@@ -21,6 +23,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
         private BuildDirectoryManager _buildDirectoryManager;
         private Mock<IExecutionContext> _ec;
         private Pipelines.RepositoryResource _repository;
+        private IList<Pipelines.RepositoryResource> _repositories;
         private Pipelines.WorkspaceOptions _workspaceOptions;
         private TrackingConfig _existingConfig;
         private TrackingConfig _newConfig;
@@ -38,7 +41,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
             using (TestHostContext hc = Setup())
             {
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
 
                 // Assert.
                 Assert.True(Directory.Exists(Path.Combine(_workFolder, _newConfig.BuildDirectory, Constants.Build.Path.ArtifactsDirectory)));
@@ -56,10 +59,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
             using (TestHostContext hc = Setup())
             {
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                var repos = new[] { _repository };
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, repos, _workspaceOptions);
 
                 // Assert.
-                _trackingManager.Verify(x => x.Create(_ec.Object, _repository, HashKey, _trackingFile, false));
+                _trackingManager.Verify(x => x.Create(_ec.Object, repos, false));
             }
         }
 
@@ -72,11 +76,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
             using (TestHostContext hc = Setup(existingConfigKind: ExistingConfigKind.Nonmatching))
             {
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                var repos = new[] { _repository };
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, repos, _workspaceOptions);
 
                 // Assert.
-                _trackingManager.Verify(x => x.LoadIfExists(_ec.Object, _trackingFile));
-                _trackingManager.Verify(x => x.Create(_ec.Object, _repository, HashKey, _trackingFile, false));
+                _trackingManager.Verify(x => x.LoadExistingTrackingConfig(_ec.Object));
+                _trackingManager.Verify(x => x.Create(_ec.Object, repos, false));
                 _trackingManager.Verify(x => x.MarkForGarbageCollection(_ec.Object, _existingConfig));
             }
         }
@@ -95,7 +100,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 File.WriteAllText(path: sourceFile, contents: "some source contents");
 
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
 
                 // Assert.
                 Assert.True(Directory.Exists(sourcesDirectory));
@@ -122,7 +127,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 File.WriteAllText(path: testResultsFile, contents: "some test result contents");
 
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
 
                 // Assert.
                 Assert.True(Directory.Exists(artifactsDirectory));
@@ -147,7 +152,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 File.WriteAllText(path: looseFile, contents: "some loose file contents");
 
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
 
                 // Assert.
                 Assert.Equal(4, Directory.GetFileSystemEntries(buildDirectory, "*", SearchOption.AllDirectories).Length);
@@ -172,11 +177,27 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 File.WriteAllText(path: binaryFile, contents: "some binary contents");
 
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
 
                 // Assert.
                 Assert.True(Directory.Exists(binariesDirectory));
                 Assert.Equal(0, Directory.GetFileSystemEntries(binariesDirectory).Length);
+            }
+        }
+
+        [Fact]
+        [Trait("Level", "L0")]
+        [Trait("Category", "Worker")]
+        public void PrepareDirectoryUpdateRepositoryPath()
+        {
+            // Arrange.
+            using (TestHostContext hc = Setup())
+            {
+                // Act.
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
+
+                // Assert.
+                Assert.Equal(Path.Combine(_workFolder, _newConfig.SourcesDirectory), _repository.Properties.Get<string>(Pipelines.RepositoryPropertyNames.Path));
             }
         }
 
@@ -189,14 +210,53 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
             using (TestHostContext hc = Setup(existingConfigKind: ExistingConfigKind.Matching))
             {
                 // Act.
-                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repository, _workspaceOptions);
+                _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
 
                 // Assert.
-                _trackingManager.Verify(x => x.LoadIfExists(_ec.Object, _trackingFile));
-                _trackingManager.Verify(x => x.UpdateJobRunProperties(_ec.Object, _existingConfig, _trackingFile));
+                _trackingManager.Verify(x => x.LoadExistingTrackingConfig(_ec.Object));
+                _trackingManager.Verify(x => x.UpdateTrackingConfig(_ec.Object, _existingConfig));
             }
         }
 
+        [Fact]
+        [Trait("Level", "L0")]
+        [Trait("Category", "Worker")]
+        public void UpdateDirectory()
+        {
+            // Arrange.
+            using (TestHostContext hc = Setup(existingConfigKind: ExistingConfigKind.Matching))
+            {
+                // Act.
+                var tracking = _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
+
+                _repository.Properties.Set<string>(Pipelines.RepositoryPropertyNames.Path, Path.Combine(hc.GetDirectory(WellKnownDirectory.Work), tracking.BuildDirectory, $"test{Path.DirectorySeparatorChar}foo"));
+
+                var newTracking = _buildDirectoryManager.UpdateDirectory(_ec.Object, _repository);
+
+                // Assert.
+                Assert.Equal(newTracking.SourcesDirectory, $"1{Path.DirectorySeparatorChar}test{Path.DirectorySeparatorChar}foo");
+            }
+        }
+
+        [Fact]
+        [Trait("Level", "L0")]
+        [Trait("Category", "Worker")]
+        public void UpdateDirectoryFailOnInvalidPath()
+        {
+            // Arrange.
+            using (TestHostContext hc = Setup(existingConfigKind: ExistingConfigKind.Matching))
+            {
+                // Act.
+                var tracking = _buildDirectoryManager.PrepareDirectory(_ec.Object, _repositories, _workspaceOptions);
+
+                _repository.Properties.Set<string>(Pipelines.RepositoryPropertyNames.Path, Path.Combine(hc.GetDirectory(WellKnownDirectory.Work), "test\\foo"));
+
+                var exception = Assert.Throws<ArgumentException>(() => _buildDirectoryManager.UpdateDirectory(_ec.Object, _repository));
+
+                // Assert.
+                Assert.True(exception.Message.Contains("should be located under agent's work directory"));
+            }
+        }
         // TODO: Updates legacy config.
 
         private TestHostContext Setup(
@@ -234,11 +294,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
             // Setup the endpoint.
             _repository = new Pipelines.RepositoryResource()
             {
-                Alias = "test",
+                Alias = "self",
                 Type = Pipelines.RepositoryTypes.Git,
                 Url = new Uri("http://contoso.visualstudio.com"),
             };
             _repository.Properties.Set<String>(Pipelines.RepositoryPropertyNames.Name, "Some endpoint name");
+            _repositories = new[] { _repository };
 
             _workspaceOptions = new Pipelines.WorkspaceOptions();
             // // Setup the source provider.
@@ -252,11 +313,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
             switch (existingConfigKind)
             {
                 case ExistingConfigKind.Matching:
-                    _existingConfig = new TrackingConfig(_ec.Object, _repository, 1, HashKey);
+                    _existingConfig = new TrackingConfig(_ec.Object, _repositories, 1);
                     Assert.Equal("1", _existingConfig.BuildDirectory);
                     break;
                 case ExistingConfigKind.Nonmatching:
-                    _existingConfig = new TrackingConfig(_ec.Object, _repository, 2, NonmatchingHashKey);
+                    _existingConfig = new TrackingConfig(_ec.Object, _repositories, 2);
                     Assert.Equal("2", _existingConfig.BuildDirectory);
                     break;
                 case ExistingConfigKind.None:
@@ -272,32 +333,30 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
             }
             else
             {
-                _newConfig = new TrackingConfig(_ec.Object, _repository, 3, HashKey);
+                _newConfig = new TrackingConfig(_ec.Object, _repositories, 3);
                 Assert.Equal("3", _newConfig.BuildDirectory);
             }
 
             // Setup the tracking manager.
             _trackingManager = new Mock<ITrackingManager>();
             _trackingManager
-                .Setup(x => x.LoadIfExists(_ec.Object, _trackingFile))
+                .Setup(x => x.LoadExistingTrackingConfig(_ec.Object))
                 .Returns(_existingConfig);
-            if (existingConfigKind == ExistingConfigKind.None || existingConfigKind == ExistingConfigKind.Nonmatching)
+
+            _trackingManager
+                .Setup(x => x.Create(_ec.Object, _repositories, false))
+                .Returns(_newConfig);
+            if (existingConfigKind == ExistingConfigKind.Nonmatching)
             {
                 _trackingManager
-                    .Setup(x => x.Create(_ec.Object, _repository, HashKey, _trackingFile, false))
-                    .Returns(_newConfig);
-                if (existingConfigKind == ExistingConfigKind.Nonmatching)
-                {
-                    _trackingManager
-                        .Setup(x => x.MarkForGarbageCollection(_ec.Object, _existingConfig));
-                }
+                    .Setup(x => x.MarkForGarbageCollection(_ec.Object, _existingConfig));
             }
             else if (existingConfigKind == ExistingConfigKind.Matching)
             {
                 _trackingManager
-                    .Setup(x => x.UpdateJobRunProperties(_ec.Object, _existingConfig, _trackingFile));
+                    .Setup(x => x.UpdateTrackingConfig(_ec.Object, _existingConfig));
             }
-            else
+            else if (existingConfigKind != ExistingConfigKind.None)
             {
                 throw new NotSupportedException();
             }
