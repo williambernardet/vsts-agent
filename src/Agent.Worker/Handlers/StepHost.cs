@@ -1,10 +1,14 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.TeamFoundation.DistributedTask.WebApi;
+using Microsoft.TeamFoundation.Framework.Common;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using Microsoft.VisualStudio.Services.Agent.Worker.Container;
 using Microsoft.VisualStudio.Services.WebApi;
@@ -26,6 +30,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                                bool requireExitCodeZero,
                                Encoding outputEncoding,
                                bool killProcessOnCancel,
+                               bool inheritConsoleHandler,
                                CancellationToken cancellationToken);
     }
 
@@ -33,6 +38,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
     public interface IContainerStepHost : IStepHost
     {
         ContainerInfo Container { get; set; }
+        string PrependPath { get; set; }
     }
 
     [ServiceLocator(Default = typeof(DefaultStepHost))]
@@ -57,6 +63,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                                             bool requireExitCodeZero,
                                             Encoding outputEncoding,
                                             bool killProcessOnCancel,
+                                            bool inheritConsoleHandler,
                                             CancellationToken cancellationToken)
         {
             using (var processInvoker = HostContext.CreateService<IProcessInvoker>())
@@ -71,6 +78,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                                                          requireExitCodeZero: requireExitCodeZero,
                                                          outputEncoding: outputEncoding,
                                                          killProcessOnCancel: killProcessOnCancel,
+                                                         redirectStandardIn: null,
+                                                         inheritConsoleHandler: inheritConsoleHandler,
                                                          cancellationToken: cancellationToken);
             }
         }
@@ -79,6 +88,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
     public sealed class ContainerStepHost : AgentService, IContainerStepHost
     {
         public ContainerInfo Container { get; set; }
+        public string PrependPath { get; set; }
         public event EventHandler<ProcessDataReceivedEventArgs> OutputDataReceived;
         public event EventHandler<ProcessDataReceivedEventArgs> ErrorDataReceived;
 
@@ -92,26 +102,26 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
             path = path.Trim('\"');
 
             // try to resolve path inside container if the request path is part of the mount volume
-            // otherwise just return the file name and rely on the file is part of the %PATH% inside the container.
-#if OS_WINDOWS
-            if (Container.MountVolumes.Exists(x => path.StartsWith(x.SourceVolumePath, StringComparison.OrdinalIgnoreCase)))
-#else
-            if (Container.MountVolumes.Exists(x => path.StartsWith(x.SourceVolumePath)))
-#endif
+            StringComparison sc = (PlatformUtil.RunningOnWindows)
+                                ? StringComparison.OrdinalIgnoreCase
+                                : StringComparison.Ordinal;
+            if (Container.MountVolumes.Exists(x => {
+                if (!string.IsNullOrEmpty(x.SourceVolumePath))
+                {
+                    return path.StartsWith(x.SourceVolumePath, sc);
+                }
+                if (!string.IsNullOrEmpty(x.TargetVolumePath))
+                {
+                    return path.StartsWith(x.TargetVolumePath, sc);
+                }
+                return false; // this should not happen, but just in case bad data got into MountVolumes, we do not want to throw an exception here
+            }))
             {
-                return Container.TranslateToContainerPath(path);
-            }
-#if OS_WINDOWS
-            else if (Container.MountVolumes.Exists(x => path.StartsWith(x.TargetVolumePath, StringComparison.OrdinalIgnoreCase)))
-#else
-            else if (Container.MountVolumes.Exists(x => path.StartsWith(x.TargetVolumePath)))
-#endif
-            {
-                return path;
+                return Container.TranslateContainerPathForImageOS(PlatformUtil.HostOS, Container.TranslateToContainerPath(path));
             }
             else
             {
-                return Path.GetFileName(path);
+                return path;
             }
         }
 
@@ -122,6 +132,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                                             bool requireExitCodeZero,
                                             Encoding outputEncoding,
                                             bool killProcessOnCancel,
+                                            bool inheritConsoleHandler,
                                             CancellationToken cancellationToken)
         {
             // make sure container exist.
@@ -137,6 +148,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                 ExecutionHandlerWorkingDirectory = workingDirectory,
                 ExecutionHandlerArguments = arguments,
                 ExecutionHandlerEnvironment = environment,
+                ExecutionHandlerPrependPath = PrependPath
             };
 
             // copy the intermediate script (containerHandlerInvoker.js) into Agent_TempDirectory
@@ -148,30 +160,45 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
             //    We use this intermediate script to read everything from STDIN, then launch the task execution engine (node/powershell) and redirect STDOUT/STDERR
 
             string tempDir = Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Work), Constants.Path.TempDirectory);
-            File.Copy(Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Bin), "containerHandlerInvoker.js"), Path.Combine(tempDir, "containerHandlerInvoker.js"), true);
+            string targetEntryScript = Path.Combine(tempDir, "containerHandlerInvoker.js");
+            HostContext.GetTrace(nameof(ContainerStepHost)).Info($"Copying containerHandlerInvoker.js to {tempDir}");
+            File.Copy(Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Bin), "containerHandlerInvoker.js.template"), targetEntryScript, true);
 
-            string node = Container.TranslateToContainerPath(Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Externals), "node", "bin", $"node{IOUtil.ExeExtension}"));
-            string entryScript = Container.TranslateToContainerPath(Path.Combine(tempDir, "containerHandlerInvoker.js"));
+            string node;
+            if (!string.IsNullOrEmpty(Container.CustomNodePath))
+            {
+                node = Container.CustomNodePath;
+            }
+            else
+            {
+                node = Container.TranslateToContainerPath(Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Externals), "node", "bin", $"node{IOUtil.ExeExtension}"));
+            }
 
-#if !OS_WINDOWS
-            string containerExecutionArgs = $"exec -i -u {Container.CurrentUserId} {Container.ContainerId} {node} {entryScript}";
-#else
-            string containerExecutionArgs = $"exec -i {Container.ContainerId} {node} {entryScript}";
-#endif
+            string entryScript = Container.TranslateContainerPathForImageOS(PlatformUtil.HostOS, Container.TranslateToContainerPath(targetEntryScript));
+
+            string userArgs = "";
+            if (!PlatformUtil.RunningOnWindows)
+            {
+                userArgs = $"-u {Container.CurrentUserId}";
+            }
+            string containerExecutionArgs = $"exec -i {userArgs} {Container.ContainerId} {node} {entryScript}";
 
             using (var processInvoker = HostContext.CreateService<IProcessInvoker>())
             {
                 processInvoker.OutputDataReceived += OutputDataReceived;
                 processInvoker.ErrorDataReceived += ErrorDataReceived;
+                outputEncoding = null; // Let .NET choose the default.
 
-#if OS_WINDOWS
-                // It appears that node.exe outputs UTF8 when not in TTY mode.
-                outputEncoding = Encoding.UTF8;
-#else
-                // Let .NET choose the default.
-                outputEncoding = null;
-#endif
+                if (PlatformUtil.RunningOnWindows)
+                {
+                    // It appears that node.exe outputs UTF8 when not in TTY mode.
+                    outputEncoding = Encoding.UTF8;
+                }
 
+                var redirectStandardIn = new InputQueue<string>();
+                var payloadJson = JsonUtility.ToString(payload);
+                redirectStandardIn.Enqueue(payloadJson);
+                HostContext.GetTrace(nameof(ContainerStepHost)).Info($"Payload: {payloadJson}");
                 return await processInvoker.ExecuteAsync(workingDirectory: HostContext.GetDirectory(WellKnownDirectory.Work),
                                                          fileName: containerEnginePath,
                                                          arguments: containerExecutionArgs,
@@ -179,7 +206,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                                                          requireExitCodeZero: requireExitCodeZero,
                                                          outputEncoding: outputEncoding,
                                                          killProcessOnCancel: killProcessOnCancel,
-                                                         contentsToStandardIn: new List<string>() { JsonUtility.ToString(payload) },
+                                                         redirectStandardIn: redirectStandardIn,
+                                                         inheritConsoleHandler: inheritConsoleHandler,
                                                          cancellationToken: cancellationToken);
             }
         }
@@ -197,6 +225,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
 
             [JsonProperty("environment")]
             public IDictionary<string, string> ExecutionHandlerEnvironment { get; set; }
+
+            [JsonProperty("prependPath")]
+            public string ExecutionHandlerPrependPath { get; set; }
         }
     }
 }

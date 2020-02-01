@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System;
 using System.Collections.Generic;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
@@ -55,6 +58,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                 // Node.
                 handler = HostContext.CreateService<INodeHandler>();
                 (handler as INodeHandler).Data = data as NodeHandlerData;
+            }
+            else if (data is Node10HandlerData)
+            {
+                // Node10.
+                handler = HostContext.CreateService<INodeHandler>();
+                (handler as INodeHandler).Data = data as Node10HandlerData;
             }
             else if (data is PowerShell3HandlerData)
             {

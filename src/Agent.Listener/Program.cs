@@ -1,9 +1,12 @@
-﻿using Microsoft.VisualStudio.Services.Agent.Util;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
+using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace Microsoft.VisualStudio.Services.Agent.Listener
@@ -30,43 +33,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
         public async static Task<int> MainAsync(IHostContext context, string[] args)
         {
             Tracing trace = context.GetTrace("AgentProcess");
-            trace.Info($"Agent is built for {Constants.Agent.Platform} ({Constants.Agent.PlatformArchitecture}) - {BuildConstants.AgentPackage.PackageName}.");
+            trace.Info($"Agent package {BuildConstants.AgentPackage.PackageName}.");
+            trace.Info($"Running on {PlatformUtil.HostOS} ({PlatformUtil.HostArchitecture}).");
             trace.Info($"RuntimeInformation: {RuntimeInformation.OSDescription}.");
             context.WritePerfCounter("AgentProcessStarted");
             var terminal = context.GetService<ITerminal>();
 
-            // Validate the binaries intended for one OS are not running on a different OS.
-            switch (Constants.Agent.Platform)
-            {
-                case Constants.OSPlatform.Linux:
-                    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                    {
-                        terminal.WriteLine(StringUtil.Loc("NotLinux"));
-                        return Constants.Agent.ReturnCode.TerminatedError;
-                    }
-                    break;
-                case Constants.OSPlatform.OSX:
-                    if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-                    {
-                        terminal.WriteLine(StringUtil.Loc("NotOSX"));
-                        return Constants.Agent.ReturnCode.TerminatedError;
-                    }
-                    break;
-                case Constants.OSPlatform.Windows:
-                    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                    {
-                        terminal.WriteLine(StringUtil.Loc("NotWindows"));
-                        return Constants.Agent.ReturnCode.TerminatedError;
-                    }
-                    break;
-                default:
-                    terminal.WriteLine(StringUtil.Loc("PlatformNotSupport", RuntimeInformation.OSDescription, Constants.Agent.Platform.ToString()));
-                    return Constants.Agent.ReturnCode.TerminatedError;
-            }
+            // TODO: check that the right supporting tools are available for this platform
+            // (replaces the check for build platform vs runtime platform)
 
             try
             {
-                trace.Info($"Version: {Constants.Agent.Version}");
+                trace.Info($"Version: {BuildConstants.AgentPackage.Version}");
                 trace.Info($"Commit: {BuildConstants.Source.CommitHash}");
                 trace.Info($"Culture: {CultureInfo.CurrentCulture.Name}");
                 trace.Info($"UI Culture: {CultureInfo.CurrentUICulture.Name}");
@@ -85,27 +63,28 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                     return Constants.Agent.ReturnCode.TerminatedError;
                 }
 
-#if OS_WINDOWS
-                // Validate PowerShell 3.0 or higher is installed.
-                var powerShellExeUtil = context.GetService<IPowerShellExeUtil>();
-                try
+                if (PlatformUtil.RunningOnWindows)
                 {
-                    powerShellExeUtil.GetPath();
-                }
-                catch (Exception e)
-                {
-                    terminal.WriteError(StringUtil.Loc("ErrorOccurred", e.Message));
-                    trace.Error(e);
-                    return Constants.Agent.ReturnCode.TerminatedError;
-                }
+                    // Validate PowerShell 3.0 or higher is installed.
+                    var powerShellExeUtil = context.GetService<IPowerShellExeUtil>();
+                    try
+                    {
+                        powerShellExeUtil.GetPath();
+                    }
+                    catch (Exception e)
+                    {
+                        terminal.WriteError(StringUtil.Loc("ErrorOccurred", e.Message));
+                        trace.Error(e);
+                        return Constants.Agent.ReturnCode.TerminatedError;
+                    }
 
-                // Validate .NET Framework 4.5 or higher is installed.
-                if (!NetFrameworkUtil.Test(new Version(4, 5), trace))
-                {
-                    terminal.WriteError(StringUtil.Loc("MinimumNetFramework"));
-                    return Constants.Agent.ReturnCode.TerminatedError;
+                    // Validate .NET Framework 4.5 or higher is installed.
+                    if (!NetFrameworkUtil.Test(new Version(4, 5), trace))
+                    {
+                        terminal.WriteError(StringUtil.Loc("MinimumNetFramework"));
+                        // warn only, like configurationmanager.cs does. this enables windows edition with just .netcore to work
+                    }
                 }
-#endif
 
                 // Add environment variables from .env file
                 string envFile = Path.Combine(context.GetDirectory(WellKnownDirectory.Root), ".env");
@@ -124,7 +103,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                 }
 
                 // Parse the command line args.
-                var command = new CommandSettings(context, args);
+                var command = new CommandSettings(context, args, new SystemEnvironment());
                 trace.Info("Arguments parsed");
 
                 // Up front validation, warn for unrecognized commandline args.

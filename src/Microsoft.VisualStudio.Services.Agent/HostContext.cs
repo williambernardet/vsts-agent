@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Concurrent;
@@ -14,12 +18,12 @@ using System.Net.Http;
 using System.Diagnostics.Tracing;
 using Microsoft.TeamFoundation.DistributedTask.Logging;
 using System.Net.Http.Headers;
+using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Microsoft.VisualStudio.Services.Agent
 {
     public interface IHostContext : IDisposable
     {
-        RunMode RunMode { get; set; }
         StartupType StartupType { get; set; }
         CancellationToken AgentShutdownToken { get; }
         ShutdownReason AgentShutdownReason { get; }
@@ -35,6 +39,7 @@ namespace Microsoft.VisualStudio.Services.Agent
         event EventHandler Unloading;
         void ShutdownAgent(ShutdownReason reason);
         void WritePerfCounter(string counter);
+        ContainerInfo CreateContainerInfo(Pipelines.ContainerResource container, Boolean isJobContainer = true);
     }
 
     public enum StartupType
@@ -53,11 +58,9 @@ namespace Microsoft.VisualStudio.Services.Agent
         private readonly ConcurrentDictionary<Type, object> _serviceInstances = new ConcurrentDictionary<Type, object>();
         private readonly ConcurrentDictionary<Type, Type> _serviceTypes = new ConcurrentDictionary<Type, Type>();
         private readonly ISecretMasker _secretMasker = new SecretMasker();
-        private readonly ProductInfoHeaderValue _userAgent = new ProductInfoHeaderValue($"VstsAgentCore-{BuildConstants.AgentPackage.PackageName}", Constants.Agent.Version);
+        private readonly ProductInfoHeaderValue _userAgent = new ProductInfoHeaderValue($"VstsAgentCore-{BuildConstants.AgentPackage.PackageName}", BuildConstants.AgentPackage.Version);
         private CancellationTokenSource _agentShutdownTokenSource = new CancellationTokenSource();
         private object _perfLock = new object();
-
-        private RunMode _runMode = RunMode.Normal;
         private Tracing _trace;
         private Tracing _vssTrace;
         private Tracing _httpTrace;
@@ -144,20 +147,6 @@ namespace Microsoft.VisualStudio.Services.Agent
             }
         }
 
-        public RunMode RunMode
-        {
-            get
-            {
-                return _runMode;
-            }
-
-            set
-            {
-                _trace.Info($"Set run mode: {value}");
-                _runMode = value;
-            }
-        }
-
         public string GetDirectory(WellKnownDirectory directory)
         {
             string path;
@@ -195,6 +184,12 @@ namespace Microsoft.VisualStudio.Services.Agent
                         Constants.Path.ServerOMDirectory);
                     break;
 
+                case WellKnownDirectory.Tf:
+                    path = Path.Combine(
+                        GetDirectory(WellKnownDirectory.Externals),
+                        Constants.Path.TfDirectory);
+                    break;
+
                 case WellKnownDirectory.Tee:
                     path = Path.Combine(
                         GetDirectory(WellKnownDirectory.Externals),
@@ -211,6 +206,12 @@ namespace Microsoft.VisualStudio.Services.Agent
                     path = Path.Combine(
                         GetDirectory(WellKnownDirectory.Work),
                         Constants.Path.TasksDirectory);
+                    break;
+
+                case WellKnownDirectory.TaskZips:
+                    path = Path.Combine(
+                        GetDirectory(WellKnownDirectory.Work),
+                        Constants.Path.TaskZipsDirectory);
                     break;
 
                 case WellKnownDirectory.Tools:
@@ -277,15 +278,18 @@ namespace Microsoft.VisualStudio.Services.Agent
                     break;
 
                 case WellKnownConfigFile.CredentialStore:
-#if OS_OSX
-                    path = Path.Combine(
-                        GetDirectory(WellKnownDirectory.Root),
-                        ".credential_store.keychain");
-#else
-                    path = Path.Combine(
-                        GetDirectory(WellKnownDirectory.Root),
-                        ".credential_store");
-#endif
+                    if (PlatformUtil.RunningOnMacOS)
+                    {
+                        path = Path.Combine(
+                            GetDirectory(WellKnownDirectory.Root),
+                            ".credential_store.keychain");
+                    }
+                    else
+                    {
+                        path = Path.Combine(
+                            GetDirectory(WellKnownDirectory.Root),
+                            ".credential_store");
+                    }
                     break;
 
                 case WellKnownConfigFile.Certificates:
@@ -346,7 +350,10 @@ namespace Microsoft.VisualStudio.Services.Agent
         /// </summary>
         public T CreateService<T>() where T : class, IAgentService
         {
-            Type target;
+            Type target = null;
+            Type defaultTarget = null;
+            Type platformTarget = null;
+
             if (!_serviceTypes.TryGetValue(typeof(T), out target))
             {
                 // Infer the concrete type from the ServiceLocatorAttribute.
@@ -354,18 +361,36 @@ namespace Microsoft.VisualStudio.Services.Agent
                     .GetTypeInfo()
                     .CustomAttributes
                     .FirstOrDefault(x => x.AttributeType == typeof(ServiceLocatorAttribute));
-                if (attribute != null)
+                if (!(attribute is null))
                 {
                     foreach (CustomAttributeNamedArgument arg in attribute.NamedArguments)
                     {
-                        if (string.Equals(arg.MemberName, ServiceLocatorAttribute.DefaultPropertyName, StringComparison.Ordinal))
+                        if (string.Equals(arg.MemberName, nameof(ServiceLocatorAttribute.Default), StringComparison.Ordinal))
                         {
-                            target = arg.TypedValue.Value as Type;
+                            defaultTarget = arg.TypedValue.Value as Type;
+                        }
+
+                        if (PlatformUtil.RunningOnWindows
+                            && string.Equals(arg.MemberName, nameof(ServiceLocatorAttribute.PreferredOnWindows), StringComparison.Ordinal))
+                        {
+                            platformTarget = arg.TypedValue.Value as Type;
+                        }
+                        else if (PlatformUtil.RunningOnMacOS
+                            && string.Equals(arg.MemberName, nameof(ServiceLocatorAttribute.PreferredOnMacOS), StringComparison.Ordinal))
+                        {
+                            platformTarget = arg.TypedValue.Value as Type;
+                        }
+                        else if (PlatformUtil.RunningOnLinux
+                            && string.Equals(arg.MemberName, nameof(ServiceLocatorAttribute.PreferredOnLinux), StringComparison.Ordinal))
+                        {
+                            platformTarget = arg.TypedValue.Value as Type;
                         }
                     }
                 }
 
-                if (target == null)
+                target = platformTarget ?? defaultTarget;
+
+                if (target is null)
                 {
                     throw new KeyNotFoundException(string.Format(CultureInfo.InvariantCulture, "Service mapping not found for key '{0}'.", typeof(T).FullName));
                 }
@@ -414,6 +439,33 @@ namespace Microsoft.VisualStudio.Services.Agent
             _trace.Info($"Agent will be shutdown for {reason.ToString()}");
             AgentShutdownReason = reason;
             _agentShutdownTokenSource.Cancel();
+        }
+
+        public ContainerInfo CreateContainerInfo(Pipelines.ContainerResource container, Boolean isJobContainer = true)
+        {
+            ContainerInfo containerInfo = new ContainerInfo(container, isJobContainer);
+            Dictionary<string, string> pathMappings = new Dictionary<string, string>();
+            if (PlatformUtil.RunningOnWindows)
+            {
+                pathMappings[this.GetDirectory(WellKnownDirectory.Tools)] = "C:\\__t"; // Tool cache folder may come from ENV, so we need a unique folder to avoid collision
+                pathMappings[this.GetDirectory(WellKnownDirectory.Work)] = "C:\\__w";
+                pathMappings[this.GetDirectory(WellKnownDirectory.Root)] = "C:\\__a";
+                // add -v '\\.\pipe\docker_engine:\\.\pipe\docker_engine' when they are available (17.09)
+            }
+            else
+            {
+                pathMappings[this.GetDirectory(WellKnownDirectory.Tools)] = "/__t"; // Tool cache folder may come from ENV, so we need a unique folder to avoid collision
+                pathMappings[this.GetDirectory(WellKnownDirectory.Work)] = "/__w";
+                pathMappings[this.GetDirectory(WellKnownDirectory.Root)] = "/__a";
+            }
+
+            if (containerInfo.IsJobContainer && containerInfo.MapDockerSocket)
+            {
+                containerInfo.MountVolumes.Add(new MountVolume("/var/run/docker.sock", "/var/run/docker.sock"));
+            }
+
+            containerInfo.AddPathMappings(pathMappings);
+            return containerInfo;
         }
 
         public override void Dispose()

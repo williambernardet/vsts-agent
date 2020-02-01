@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -49,7 +52,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release.Artifacts
             }
 
             var rootDirectory = Directory.GetParent(downloadFolderPath).Name;
-            executionContext.Variables.Set(Constants.Variables.Agent.BuildDirectory, rootDirectory);
+            executionContext.SetVariable(Constants.Variables.Agent.BuildDirectory, rootDirectory);
             tfsVCEndpoint.Data.Add(Constants.EndpointData.SourcesDirectory, downloadFolderPath);
             tfsVCEndpoint.Data.Add(Constants.EndpointData.SourceVersion, artifactDefinition.Version);
 

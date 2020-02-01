@@ -1,5 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using Agent.Sdk;
-using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -13,7 +15,7 @@ using Microsoft.VisualStudio.Services.Agent.Util;
 
 namespace Agent.Plugins.Repository
 {
-    public sealed class TFCliManager : TfsVCCliManager
+    public sealed class TFCliManager : TfsVCCliManager, ITfsVCCliManager
     {
         public override TfsVCFeatures Features
         {
@@ -33,11 +35,11 @@ namespace Agent.Plugins.Repository
 
         protected override string Switch => "/";
 
-        public string FilePath => Path.Combine(ExecutionContext.Variables.GetValueOrDefault("Agent.ServerOMDirectory")?.Value, "tf.exe");
+        public string FilePath => Path.Combine(ExecutionContext.Variables.GetValueOrDefault("Agent.HomeDirectory")?.Value, "externals", "tf", "tf.exe");
 
-        private string AppConfigFile => Path.Combine(ExecutionContext.Variables.GetValueOrDefault("Agent.ServerOMDirectory")?.Value, "tf.exe.config");
+        private string AppConfigFile => Path.Combine(ExecutionContext.Variables.GetValueOrDefault("Agent.HomeDirectory")?.Value, "externals", "tf", "tf.exe.config");
 
-        private string AppConfigRestoreFile => Path.Combine(ExecutionContext.Variables.GetValueOrDefault("Agent.ServerOMDirectory")?.Value, "tf.exe.config.restore");
+        private string AppConfigRestoreFile => Path.Combine(ExecutionContext.Variables.GetValueOrDefault("Agent.HomeDirectory")?.Value, "externals", "tf", "tf.exe.config.restore");
 
         // TODO: Remove AddAsync after last-saved-checkin-metadata problem is fixed properly.
         public async Task AddAsync(string localPath)
@@ -59,10 +61,10 @@ namespace Agent.Plugins.Repository
             throw new NotSupportedException();
         }
 
-        public async Task GetAsync(string localPath)
+        public async Task GetAsync(string localPath, bool quiet = false)
         {
             ArgUtil.NotNullOrEmpty(localPath, nameof(localPath));
-            await RunCommandAsync(FormatFlags.OmitCollectionUrl, "vc", "get", $"/version:{SourceVersion}", "/recursive", "/overwrite", localPath);
+            await RunCommandAsync(FormatFlags.OmitCollectionUrl, quiet, "vc", "get", $"/version:{SourceVersion}", "/recursive", "/overwrite", localPath);
         }
 
         public string ResolvePath(string serverPath)
@@ -273,7 +275,17 @@ namespace Agent.Plugins.Repository
 
         public async Task WorkspaceNewAsync()
         {
-            await RunCommandAsync("vc", "workspace", "/new", "/location:local", "/permission:Public", WorkspaceName);
+            var useServerWorkspace = StringUtil.ConvertToBoolean(ExecutionContext.Variables.GetValueOrDefault("build.useserverworkspaces")?.Value ?? "false");
+            ExecutionContext.Debug($"useServerWorkspace is set to : '{useServerWorkspace}'");
+
+            if (useServerWorkspace)
+            {
+                await RunCommandAsync("vc", "workspace", "/new", "/location:server", "/permission:Public", WorkspaceName);
+            }
+            else
+            {
+                await RunCommandAsync("vc", "workspace", "/new", "/location:local", "/permission:Public", WorkspaceName);
+            }
         }
 
         public async Task<ITfsVCWorkspace[]> WorkspacesAsync(bool matchWorkspaceNameOnAnyComputer = false)

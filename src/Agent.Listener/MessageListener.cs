@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Capabilities;
 using Microsoft.VisualStudio.Services.Agent.Listener.Configuration;
@@ -10,7 +13,6 @@ using System.Threading.Tasks;
 using System.Security.Cryptography;
 using System.IO;
 using System.Text;
-using Microsoft.VisualStudio.Services.WebApi;
 using Microsoft.VisualStudio.Services.OAuth;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -65,15 +67,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
             Trace.Info("Loading Credentials");
             var credMgr = HostContext.GetService<ICredentialManager>();
             VssCredentials creds = credMgr.LoadCredentials();
-            Uri uri = new Uri(serverUrl);
-            VssConnection conn = VssUtil.CreateConnection(uri, creds);
-            Trace.Info("VssConnection created");
 
             var agent = new TaskAgentReference
             {
                 Id = _settings.AgentId,
                 Name = _settings.AgentName,
-                Version = Constants.Agent.Version,
+                Version = BuildConstants.AgentPackage.Version,
                 OSDescription = RuntimeInformation.OSDescription,
             };
             string sessionName = $"{Environment.MachineName ?? "AGENT"}";
@@ -90,7 +89,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                 try
                 {
                     Trace.Info("Connecting to the Agent Server...");
-                    await _agentServer.ConnectAsync(conn);
+                    await _agentServer.ConnectAsync(new Uri(serverUrl), creds);
+                    Trace.Info("VssConnection created");
 
                     _session = await _agentServer.CreateAgentSessionAsync(
                                                         _settings.PoolId,
@@ -112,7 +112,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                     Trace.Info("Session creation has been cancelled.");
                     throw;
                 }
-                catch (TaskAgentAccessTokeExpiredException)
+                catch (TaskAgentAccessTokenExpiredException)
                 {
                     Trace.Info("Agent OAuth token has been revoked. Session creation failed.");
                     throw;
@@ -192,7 +192,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                     Trace.Info("Get next message has been cancelled.");
                     throw;
                 }
-                catch (TaskAgentAccessTokeExpiredException)
+                catch (TaskAgentAccessTokenExpiredException)
                 {
                     Trace.Info("Agent OAuth token has been revoked. Unable to pull message.");
                     throw;
@@ -233,6 +233,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                             _term.WriteError(StringUtil.Loc("QueueConError", DateTime.UtcNow, ex.Message));
                             encounteringError = true;
                         }
+
+                        // re-create VssConnection before next retry
+                        await _agentServer.RefreshConnectionAsync(AgentConnectionType.MessageQueue, TimeSpan.FromSeconds(60));
 
                         Trace.Info("Sleeping for {0} seconds before retrying.", _getNextMessageRetryInterval.TotalSeconds);
                         await HostContext.Delay(_getNextMessageRetryInterval, token);

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -57,14 +60,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release.Artifacts
             gitHubEndpoint.Data.Add("fetchDepth", gitHubDetails.FetchDepth);
             gitHubEndpoint.Data.Add("GitLfsSupport", gitHubDetails.GitLfsSupport);
 
-            try
-            {
-                await sourceProvider.GetSourceAsync(executionContext, gitHubEndpoint, executionContext.CancellationToken);
-            }
-            catch (InvalidOperationException ex)
-            {
-                throw new ArtifactDownloadException(StringUtil.Loc("RMDownloadArtifactUnexpectedError"), ex);
-            }
+            await sourceProvider.GetSourceAsync(executionContext, gitHubEndpoint, executionContext.CancellationToken);
         }
 
         public IArtifactDetails GetArtifactDetails(

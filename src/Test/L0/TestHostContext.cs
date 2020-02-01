@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Concurrent;
@@ -8,9 +11,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.Loader;
 using System.Reflection;
-using System.Collections.Generic;
 using Microsoft.TeamFoundation.DistributedTask.Logging;
 using System.Net.Http.Headers;
+using Agent.Sdk;
+using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Microsoft.VisualStudio.Services.Agent.Tests
 {
@@ -55,6 +59,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
             }
 
             var traceListener = new HostTraceListener(TraceFileName);
+            traceListener.DisableConsoleReporting = true;
             _secretMasker = new SecretMasker();
             _secretMasker.AddValueEncoder(ValueEncoders.JsonStringEscape);
             _secretMasker.AddValueEncoder(ValueEncoders.UriDataEscape);
@@ -68,17 +73,16 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
             SetSingleton<ITerminal>(_term);
             EnqueueInstance<ITerminal>(_term);
 
-#if !OS_WINDOWS
-            string eulaFile = Path.Combine(GetDirectory(WellKnownDirectory.Externals), Constants.Path.TeeDirectory, "license.html");
-            Directory.CreateDirectory(GetDirectory(WellKnownDirectory.Externals));
-            Directory.CreateDirectory(Path.Combine(GetDirectory(WellKnownDirectory.Externals), Constants.Path.TeeDirectory));
-            File.WriteAllText(eulaFile, "testeulafile");
-#endif
+            if (!TestUtil.IsWindows())
+            {
+                string eulaFile = Path.Combine(GetDirectory(WellKnownDirectory.Externals), Constants.Path.TeeDirectory, "license.html");
+                Directory.CreateDirectory(GetDirectory(WellKnownDirectory.Externals));
+                Directory.CreateDirectory(Path.Combine(GetDirectory(WellKnownDirectory.Externals), Constants.Path.TeeDirectory));
+                File.WriteAllText(eulaFile, "testeulafile");
+            }
         }
 
         public CultureInfo DefaultCulture { get; private set; }
-
-        public RunMode RunMode { get; set; }
 
         public string TraceFileName { get; private set; }
 
@@ -202,6 +206,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
                         Constants.Path.ServerOMDirectory);
                     break;
 
+                case WellKnownDirectory.Tf:
+                    path = Path.Combine(
+                        GetDirectory(WellKnownDirectory.Externals),
+                        Constants.Path.TfDirectory);
+                    break;
+
                 case WellKnownDirectory.Tee:
                     path = Path.Combine(
                         GetDirectory(WellKnownDirectory.Externals),
@@ -218,6 +228,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
                     path = Path.Combine(
                         GetDirectory(WellKnownDirectory.Work),
                         Constants.Path.TasksDirectory);
+                    break;
+
+                case WellKnownDirectory.TaskZips:
+                    path = Path.Combine(
+                        GetDirectory(WellKnownDirectory.Work),
+                        Constants.Path.TaskZipsDirectory);
                     break;
 
                 case WellKnownDirectory.Tools:
@@ -280,15 +296,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
                     break;
 
                 case WellKnownConfigFile.CredentialStore:
-#if OS_OSX
-                    path = Path.Combine(
-                        GetDirectory(WellKnownDirectory.Root),
-                        ".credential_store.keychain");
-#else
-                    path = Path.Combine(
-                        GetDirectory(WellKnownDirectory.Root),
-                        ".credential_store");
-#endif
+                    path = (TestUtil.IsMacOS())
+                        ? Path.Combine(
+                            GetDirectory(WellKnownDirectory.Root),
+                            ".credential_store.keychain")
+                        : Path.Combine(
+                            GetDirectory(WellKnownDirectory.Root),
+                            ".credential_store");
                     break;
 
                 case WellKnownConfigFile.Certificates:
@@ -345,6 +359,31 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
         public Tracing GetTrace(string name)
         {
             return _traceManager[name];
+        }
+
+        public ContainerInfo CreateContainerInfo(Pipelines.ContainerResource container, Boolean isJobContainer = true)
+        {
+            ContainerInfo containerInfo = new ContainerInfo(container, isJobContainer);
+            if (TestUtil.IsWindows())
+            {
+                // Tool cache folder may come from ENV, so we need a unique folder to avoid collision
+                containerInfo.PathMappings[this.GetDirectory(WellKnownDirectory.Tools)] = "C:\\__t";
+                containerInfo.PathMappings[this.GetDirectory(WellKnownDirectory.Work)] = "C:\\__w";
+                containerInfo.PathMappings[this.GetDirectory(WellKnownDirectory.Root)] = "C:\\__a";
+                // add -v '\\.\pipe\docker_engine:\\.\pipe\docker_engine' when they are available (17.09)
+            }
+            else
+            {
+                // Tool cache folder may come from ENV, so we need a unique folder to avoid collision
+                containerInfo.PathMappings[this.GetDirectory(WellKnownDirectory.Tools)] = "/__t";
+                containerInfo.PathMappings[this.GetDirectory(WellKnownDirectory.Work)] = "/__w";
+                containerInfo.PathMappings[this.GetDirectory(WellKnownDirectory.Root)] = "/__a";
+                if (containerInfo.IsJobContainer)
+                {
+                    containerInfo.MountVolumes.Add(new MountVolume("/var/run/docker.sock", "/var/run/docker.sock"));
+                }
+            }
+            return containerInfo;
         }
 
         public void ShutdownAgent(ShutdownReason reason)

@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -14,26 +18,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
     {
         public static string ExeExtension
         {
-            get
-            {
-#if OS_WINDOWS
-                return ".exe";
-#else
-                return string.Empty;
-#endif
-            }
+            get =>
+                PlatformUtil.RunningOnWindows
+                ? ".exe"
+                : string.Empty;
         }
 
         public static StringComparison FilePathStringComparison
         {
-            get
-            {
-#if OS_LINUX
-                return StringComparison.Ordinal;
-#else
-                return StringComparison.OrdinalIgnoreCase;
-#endif
-            }
+            get =>
+                PlatformUtil.RunningOnLinux
+                ? StringComparison.Ordinal
+                : StringComparison.OrdinalIgnoreCase;
         }
 
         public static void SaveObject(object obj, string path)
@@ -204,6 +200,31 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             }
         }
 
+        public static void MoveDirectory(string sourceDir, string targetDir, string stagingDir, CancellationToken token)
+        {
+            ArgUtil.Directory(sourceDir, nameof(sourceDir));
+            ArgUtil.NotNullOrEmpty(targetDir, nameof(targetDir));
+            ArgUtil.NotNullOrEmpty(stagingDir, nameof(stagingDir));
+
+            // delete existing stagingDir
+            DeleteDirectory(stagingDir, token);
+
+            // make sure parent dir of stagingDir exist
+            Directory.CreateDirectory(Path.GetDirectoryName(stagingDir));
+
+            // move source to staging
+            Directory.Move(sourceDir, stagingDir);
+
+            // delete existing targetDir
+            DeleteDirectory(targetDir, token);
+
+            // make sure parent dir of targetDir exist
+            Directory.CreateDirectory(Path.GetDirectoryName(targetDir));
+
+            // move staging to target
+            Directory.Move(stagingDir, targetDir);
+        }
+
         /// <summary>
         /// Given a path and directory, return the path relative to the directory.  If the path is not
         /// under the directory the path is returned un modified.  Examples:
@@ -225,7 +246,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             folder = folder.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
 
             // Check if the dir is a prefix of the path (if not, it isn't relative at all).
-            if (!path.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
+            if (!path.StartsWith(folder, IOUtil.FilePathStringComparison))
             {
                 return path;
             }
@@ -249,6 +270,84 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             else
             {
                 return path;
+            }
+        }
+
+        public static string ResolvePath(String rootPath, String relativePath)
+        {
+            ArgUtil.NotNullOrEmpty(rootPath, nameof(rootPath));
+            ArgUtil.NotNullOrEmpty(relativePath, nameof(relativePath));
+
+            if (!Path.IsPathRooted(rootPath))
+            {
+                throw new ArgumentException($"{rootPath} should be a rooted path.");
+            }
+
+            if (relativePath.IndexOfAny(Path.GetInvalidPathChars()) > -1)
+            {
+                throw new InvalidOperationException($"{relativePath} contains invalid path characters.");
+            }
+            else if (Path.GetFileName(relativePath).IndexOfAny(Path.GetInvalidFileNameChars()) > -1)
+            {
+                throw new InvalidOperationException($"{relativePath} contains invalid folder name characters.");
+            }
+            else if (Path.IsPathRooted(relativePath))
+            {
+                throw new InvalidOperationException($"{relativePath} can not be a rooted path.");
+            }
+            else
+            {
+                rootPath = rootPath.Replace(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                relativePath = relativePath.Replace(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                // Root the path
+                relativePath = String.Concat(rootPath, Path.AltDirectorySeparatorChar, relativePath);
+
+                // Collapse ".." directories with their parent, and skip "." directories.
+                String[] split = relativePath.Split(new[] { Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+                var segments = new Stack<String>(split.Length);
+                Int32 skip = 0;
+                for (Int32 i = split.Length - 1; i >= 0; i--)
+                {
+                    String segment = split[i];
+                    if (String.Equals(segment, ".", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    else if (String.Equals(segment, "..", StringComparison.Ordinal))
+                    {
+                        skip++;
+                    }
+                    else if (skip > 0)
+                    {
+                        skip--;
+                    }
+                    else
+                    {
+                        segments.Push(segment);
+                    }
+                }
+
+                if (skip > 0)
+                {
+                    throw new InvalidOperationException($"The file path {relativePath} is invalid");
+                }
+
+                if (PlatformUtil.RunningOnWindows)
+                {
+                    if (segments.Count > 1)
+                    {
+                        return String.Join(Path.DirectorySeparatorChar, segments);
+                    }
+                    else
+                    {
+                        return segments.Pop() + Path.DirectorySeparatorChar;
+                    }
+                }
+                else
+                {
+                    return Path.DirectorySeparatorChar + String.Join(Path.DirectorySeparatorChar, segments);
+                }
             }
         }
 
@@ -361,6 +460,29 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             if (item.Attributes.HasFlag(FileAttributes.ReadOnly))
             {
                 item.Attributes = item.Attributes & ~FileAttributes.ReadOnly;
+            }
+        }
+
+        public static string GetDirectoryName(string path, PlatformUtil.OS platform)
+        {
+            if (platform == PlatformUtil.OS.Windows)
+            {
+                var paths = path.TrimEnd('\\', '/')
+                                .Split(new char[] {'\\','/'}, StringSplitOptions.RemoveEmptyEntries);
+                Array.Resize(ref paths, paths.Length - 1);
+                return string.Join('\\', paths);
+            }
+            else
+            {
+                var paths = path.TrimEnd('/')
+                                .Split('/', StringSplitOptions.RemoveEmptyEntries);
+                Array.Resize(ref paths, paths.Length - 1);
+                var prefix = "";
+                if (path.StartsWith('/'))
+                {
+                    prefix = "/";
+                }
+                return prefix + string.Join('/', paths);
             }
         }
     }

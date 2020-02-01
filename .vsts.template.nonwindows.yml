@@ -1,4 +1,14 @@
+parameters:
+  componentDetection: 'false'
+  testLogTitle: 'Non-Windows'
+
 steps:
+
+- ${{ if eq(parameters.componentDetection, 'true') }}:
+    # Component detection
+    - task: ms.vss-governance-buildtask.governance-build-task-component-detection.ComponentGovernanceComponentDetection@0
+      displayName: 'Component Detection'
+      condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
 
 # Clean
 - checkout: self
@@ -17,7 +27,17 @@ steps:
 # Publish test results
 - task: PublishTestResults@2
   displayName: Publish Test Results **/*.trx
+  condition: always()
   inputs:
     testRunner: VSTest
     testResultsFiles: '**/*.trx'
-    testRunTitle: 'Agent Tests'
+    testRunTitle: 'Agent Tests - ${{ parameters.testLogTitle }}'
+
+# Upload test log
+- task: PublishBuildArtifacts@1
+  displayName: Publish Test logs
+  condition: always()
+  inputs:
+    pathToPublish: src/Test/TestLogs
+    artifactName: ${{ parameters.testLogTitle }}-$(System.JobId)
+    artifactType: container

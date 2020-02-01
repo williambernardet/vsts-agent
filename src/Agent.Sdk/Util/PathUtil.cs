@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using Agent.Sdk;
 using System;
 using System.IO;
 
@@ -5,11 +9,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
 {
     public static class PathUtil
     {
-#if OS_WINDOWS
-        public static readonly string PathVariable = "Path";
-#else
-        public static readonly string PathVariable = "PATH";
-#endif
+        public static string PathVariable
+        {
+            get =>
+                PlatformUtil.RunningOnWindows
+                ? "Path"
+                : "PATH";
+
+        }
 
         public static string PrependPath(string path, string currentPath)
         {

@@ -1,4 +1,7 @@
-﻿using System;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -9,6 +12,7 @@ using System.Threading.Tasks;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using Microsoft.VisualStudio.Services.Common;
+using Microsoft.VisualStudio.Services.Content.Common.Telemetry;
 using Microsoft.VisualStudio.Services.WebApi;
 using Newtonsoft.Json;
 using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
@@ -18,18 +22,28 @@ namespace Agent.Sdk
     public interface IAgentTaskPlugin
     {
         Guid Id { get; }
-        string Version { get; }
         string Stage { get; }
         Task RunAsync(AgentTaskPluginExecutionContext executionContext, CancellationToken token);
+    }
+
+    public class WellKnownJobSettings
+    {
+        public static readonly string HasMultipleCheckouts = "HasMultipleCheckouts";
     }
 
     public class AgentTaskPluginExecutionContext : ITraceWriter
     {
         private VssConnection _connection;
         private readonly object _stdoutLock = new object();
+        private readonly ITraceWriter _trace; // for unit tests
 
         public AgentTaskPluginExecutionContext()
+            : this(null)
+        { }
+
+        public AgentTaskPluginExecutionContext(ITraceWriter trace)
         {
+            _trace = trace;
             this.Endpoints = new List<ServiceEndpoint>();
             this.Inputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             this.Repositories = new List<Pipelines.RepositoryResource>();
@@ -42,6 +56,8 @@ namespace Agent.Sdk
         public Dictionary<string, VariableValue> Variables { get; set; }
         public Dictionary<string, VariableValue> TaskVariables { get; set; }
         public Dictionary<string, string> Inputs { get; set; }
+        public ContainerInfo Container {get; set; }
+        public Dictionary<string, string> JobSettings { get; set; }
 
         [JsonIgnore]
         public VssConnection VssConnection
@@ -68,6 +84,14 @@ namespace Agent.Sdk
             }
 
             VssClientHttpRequestSettings.Default.UserAgent = headerValues;
+
+            if (PlatformUtil.RunningOnLinux || PlatformUtil.RunningOnMacOS)
+            {
+                // The .NET Core 2.1 runtime switched its HTTP default from HTTP 1.1 to HTTP 2.
+                // This causes problems with some versions of the Curl handler.
+                // See GitHub issue https://github.com/dotnet/corefx/issues/32376
+                VssClientHttpRequestSettings.Default.UseHttp11 = true;
+            }
 
             var certSetting = GetCertConfiguration();
             if (certSetting != null)
@@ -100,6 +124,7 @@ namespace Agent.Sdk
             ArgUtil.NotNull(credentials, nameof(credentials));
             return VssUtil.CreateConnection(systemConnection.Url, credentials);
         }
+
         public string GetInput(string name, bool required = false)
         {
             string value = null;
@@ -150,11 +175,27 @@ namespace Agent.Sdk
             Output($"##vso[task.logissue type=warning;]{Escape(message)}");
         }
 
+        public void PublishTelemetry(string area, string feature, Dictionary<string, string> properties)
+        {
+            string propertiesAsJson = StringUtil.ConvertToJson(properties, Formatting.None);
+            Output($"##vso[telemetry.publish area={area};feature={feature}]{Escape(propertiesAsJson)}");
+        }
+
+        public void PublishTelemetry(string area, string feature, TelemetryRecord record) 
+            => PublishTelemetry(area, feature, record.GetAssignedProperties());
+
         public void Output(string message)
         {
             lock (_stdoutLock)
             {
-                Console.WriteLine(message);
+                if (_trace == null)
+                {
+                    Console.WriteLine(message);
+                }
+                else
+                {
+                    _trace.Info(message);
+                }
             }
         }
 
@@ -194,6 +235,11 @@ namespace Agent.Sdk
         public void Command(string command)
         {
             Output($"##[command]{Escape(command)}");
+        }
+
+        public void UpdateRepositoryPath(string alias, string path)
+        {
+            Output($"##vso[plugininternal.updaterepositorypath alias={Escape(alias)};]{path}");
         }
 
         public AgentCertificateSettings GetCertConfiguration()
